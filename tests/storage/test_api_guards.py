@@ -12,6 +12,7 @@ from neurallm.domain.serialization import canonical_sha256
 from neurallm.providers.base import GenerationMetadata
 from neurallm.providers.fake import FakeProvider
 from neurallm.storage import (
+    CURRENT_SCHEMA_VERSION,
     HistoryBinding,
     HistoryMismatchError,
     ResumeAction,
@@ -62,9 +63,9 @@ def test_manifest_and_prepare_type_guards(tmp_path: Path) -> None:
         with pytest.raises(TypeError, match="RunManifest"):
             store.bind_manifest(object())  # type: ignore[arg-type]
         wrong_version = make_manifest(provider.provider_identity).model_copy(
-            update={"database_schema_version": 2}
+            update={"database_schema_version": CURRENT_SCHEMA_VERSION + 1}
         )
-        with pytest.raises(SchemaVersionError, match="does not match"):
+        with pytest.raises(SchemaVersionError, match="not supported"):
             store.bind_manifest(wrong_version)
         with pytest.raises(TypeError, match="GenerationRequest"):
             store.prepare_turn(object())  # type: ignore[arg-type]

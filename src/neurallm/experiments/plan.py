@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from neurallm.domain.models import (
     ActionBounds,
@@ -16,14 +24,26 @@ from neurallm.domain.models import (
     ProviderIdentity,
 )
 from neurallm.domain.serialization import canonical_sha256
+from neurallm.evaluation.models import EvaluationSpec
+from neurallm.evaluation.selection import StaticSelectionRecord
 from neurallm.experiments.config import LoadedExperimentConfig
-from neurallm.experiments.dataset import LoadedDataset
+from neurallm.experiments.dataset import (
+    DatasetPurpose,
+    DatasetSeal,
+    LoadedDataset,
+    validate_dataset_identity,
+)
+from neurallm.experiments.matching import (
+    MatchedCoverageExpectation,
+    materialize_matched_coverage,
+)
 from neurallm.metrics.deterministic import METRIC_VERSIONS
 from neurallm.metrics.validators import ValidatorSpec
 from neurallm.providers.base import GenerationRequest
 from neurallm.storage.migrations import CURRENT_SCHEMA_VERSION
 
 PHASE2_DECISION_RULE_VERSION = "phase2-no-scientific-decision-v1"
+PHASE3_DECISION_RULE_VERSION = "phase3-baseline-evaluator-v1"
 
 
 class _StrictFrozenModel(BaseModel):
@@ -59,8 +79,10 @@ class ExperimentPlan(_StrictFrozenModel):
 
     experiment_id: str = Field(min_length=1)
     dataset_version: str = Field(min_length=1)
+    dataset_purpose: DatasetPurpose | None = None
     experiment_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     dataset_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_seal: DatasetSeal | None = None
     provider_identity: ProviderIdentity
     provider_effective_configuration_json: str = Field(min_length=2)
     action_bounds: ActionBounds
@@ -68,6 +90,21 @@ class ExperimentPlan(_StrictFrozenModel):
     metric_versions: Mapping[str, str]
     decision_rule_version: str = Field(min_length=1)
     database_schema_version: int = Field(gt=0)
+    evaluation: EvaluationSpec | None = None
+    evaluation_spec_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    static_selection_record: StaticSelectionRecord | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    static_selection_result_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+    matched_units: tuple[MatchedCoverageExpectation, ...] = ()
     turns: tuple[PlannedTurn, ...]
 
     @field_validator("metric_versions")
@@ -92,6 +129,43 @@ class ExperimentPlan(_StrictFrozenModel):
             raise ValueError("experiment plan contains duplicate logical requests")
         return values
 
+    @model_validator(mode="after")
+    def _validate_evaluation_identity_and_coverage(self) -> Self:
+        if self.evaluation is None:
+            if (
+                self.evaluation_spec_sha256 is not None
+                or self.static_selection_record is not None
+                or self.static_selection_result_sha256 is not None
+                or self.matched_units
+            ):
+                raise ValueError("Phase 2 plan cannot contain Phase 3 evaluation evidence")
+            return self
+        if self.evaluation_spec_sha256 != canonical_sha256(self.evaluation):
+            raise ValueError("evaluation_spec_sha256 does not match EvaluationSpec")
+        if self.static_selection_record is None or self.static_selection_result_sha256 is None:
+            raise ValueError("Phase 3 plan requires frozen static-selection evidence")
+        if (
+            self.static_selection_result_sha256
+            != self.static_selection_record.selection_result_sha256
+        ):
+            raise ValueError("static selection hash does not match its canonical evidence")
+        if not self.matched_units:
+            raise ValueError("Phase 3 plan requires matched coverage expectations")
+        expected_ids = tuple(
+            sorted(
+                condition_id
+                for unit in self.matched_units
+                for condition_id in unit.expected_condition_ids
+            )
+        )
+        actual_ids = tuple(sorted(turn.condition.condition_id for turn in self.turns))
+        if expected_ids != actual_ids:
+            raise ValueError("matched coverage expectations do not exactly cover plan turns")
+        unit_keys = tuple(unit.unit_key for unit in self.matched_units)
+        if len(unit_keys) != len(set(unit_keys)):
+            raise ValueError("matched coverage expectations contain duplicate analysis units")
+        return self
+
     @property
     def scientific_identity_sha256(self) -> str:
         return canonical_sha256(self)
@@ -109,19 +183,30 @@ def build_plan(
         raise TypeError("loaded_dataset must be a LoadedDataset")
     config = loaded_config.config
     dataset = loaded_dataset.dataset
-    if dataset.version != config.dataset.version:
-        raise ValueError("dataset version does not match experiment configuration")
+    validate_dataset_identity(
+        dataset,
+        expected_version=config.dataset.version,
+        expected_purpose=config.dataset.purpose,
+        expected_sha256=config.dataset.expected_dataset_sha256,
+        seal=config.dataset.seal,
+    )
     if dict(config.metric_versions) != METRIC_VERSIONS:
         raise ValueError("configured metric versions do not match the implementation")
-    if config.database_schema_version != CURRENT_SCHEMA_VERSION:
-        raise ValueError("configured database schema version does not match the implementation")
-    if config.decision_rule_version != PHASE2_DECISION_RULE_VERSION:
-        raise ValueError("configured decision rule version does not match Phase 2")
+    if not 1 <= config.database_schema_version <= CURRENT_SCHEMA_VERSION:
+        raise ValueError("configured database schema version is not supported")
+    if config.evaluation is None:
+        if config.decision_rule_version != PHASE2_DECISION_RULE_VERSION:
+            raise ValueError("configured decision rule version does not match Phase 2")
+    else:
+        if config.database_schema_version != CURRENT_SCHEMA_VERSION:
+            raise ValueError("Phase 3 requires the current database schema version")
+        if config.decision_rule_version != PHASE3_DECISION_RULE_VERSION:
+            raise ValueError("configured decision rule version does not match Phase 3")
 
     turns: list[PlannedTurn] = []
     provider_identity_id = config.provider.expected_identity.identity_id
     for sequence in sorted(dataset.sequences, key=lambda item: item.sequence_id):
-        for policy_id in sorted(config.policy_ids):
+        for policy_id in config.configured_policy_ids:
             for model_seed in sorted(config.model_seeds):
                 parameters = config.base_decoding_profile.with_seed(model_seed)
                 for controller_seed in sorted(config.controller_seeds):
@@ -149,11 +234,30 @@ def build_plan(
                             )
                         )
 
+    matched_units = (
+        ()
+        if config.evaluation is None
+        else materialize_matched_coverage(
+            tuple(turn.condition for turn in turns),
+            experiment_id=config.experiment_id,
+            dataset_version=dataset.version,
+            sequence_turn_indexes={
+                sequence.sequence_id: tuple(range(len(sequence.cases)))
+                for sequence in dataset.sequences
+            },
+            policy_ids=config.configured_policy_ids,
+            model_seeds=config.model_seeds,
+            controller_seeds=config.controller_seeds,
+        )
+    )
+
     return ExperimentPlan(
         experiment_id=config.experiment_id,
         dataset_version=dataset.version,
+        dataset_purpose=dataset.purpose,
         experiment_config_hash=config.experiment_config_hash,
         dataset_hash=dataset.dataset_hash,
+        dataset_seal=config.dataset.seal,
         provider_identity=config.provider.expected_identity,
         provider_effective_configuration_json=(
             config.provider.expected_effective_configuration_json
@@ -163,12 +267,22 @@ def build_plan(
         metric_versions=config.metric_versions,
         decision_rule_version=config.decision_rule_version,
         database_schema_version=config.database_schema_version,
+        evaluation=config.evaluation,
+        evaluation_spec_sha256=config.evaluation_spec_sha256,
+        static_selection_record=config.static_selection_record,
+        static_selection_result_sha256=(
+            None
+            if config.static_selection_record is None
+            else config.static_selection_record.selection_result_sha256
+        ),
+        matched_units=matched_units,
         turns=tuple(turns),
     )
 
 
 __all__ = [
     "PHASE2_DECISION_RULE_VERSION",
+    "PHASE3_DECISION_RULE_VERSION",
     "ExperimentPlan",
     "PlannedTurn",
     "build_plan",

@@ -54,6 +54,7 @@ class GenerationMetadata(_StrictFrozenModel):
     request_sha256: Sha256Hex
     generation_method: Literal[
         "request_sha256_v1",
+        "fake_provider_visible_sha256_v2",
         "llama_cpp_completion_http_v1",
     ] = "request_sha256_v1"
     provider_request_json: str | None = None

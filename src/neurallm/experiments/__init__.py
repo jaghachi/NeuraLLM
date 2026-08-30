@@ -1,5 +1,10 @@
 """Deterministic configuration, dataset, planning, and execution."""
 
+from neurallm.experiments.analysis import (
+    analyze_closed_run,
+    build_evaluation_design,
+    evaluation_records_from_store,
+)
 from neurallm.experiments.config import (
     BaseDecodingProfile,
     DatasetReference,
@@ -17,16 +22,19 @@ from neurallm.experiments.dataset import (
 )
 from neurallm.experiments.plan import (
     PHASE2_DECISION_RULE_VERSION,
+    PHASE3_DECISION_RULE_VERSION,
     ExperimentPlan,
     PlannedTurn,
     build_plan,
 )
 from neurallm.experiments.runner import (
     AppliedPolicyTrace,
+    DetailedAppliedPolicyTrace,
     ExecutionSummary,
     GitProvenance,
     PolicyRuntime,
     build_fixed_policy_runtimes,
+    build_policy_runtimes,
     build_run_manifest,
     execute_plan,
     read_git_provenance,
@@ -42,6 +50,7 @@ from neurallm.experiments.workflow import (
 __all__ = [
     "BaseDecodingProfile",
     "AppliedPolicyTrace",
+    "DetailedAppliedPolicyTrace",
     "DatasetReference",
     "ExperimentConfig",
     "ExperimentPlan",
@@ -52,18 +61,23 @@ __all__ = [
     "PlannedTurn",
     "PolicyRuntime",
     "PHASE2_DECISION_RULE_VERSION",
+    "PHASE3_DECISION_RULE_VERSION",
     "PreparedExperiment",
     "PromptCase",
     "PromptDataset",
     "PromptSequence",
     "ProviderSelection",
     "WorkflowExecutionSummary",
+    "analyze_closed_run",
+    "build_evaluation_design",
     "build_plan",
     "build_fixed_policy_runtimes",
+    "build_policy_runtimes",
     "build_run_manifest",
     "construct_provider",
     "execute_prepared",
     "execute_plan",
+    "evaluation_records_from_store",
     "load_dataset",
     "load_experiment_config",
     "prepare_experiment",

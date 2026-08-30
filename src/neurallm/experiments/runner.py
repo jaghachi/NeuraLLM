@@ -1,4 +1,4 @@
-"""Deterministic Phase 2 execution and crash-safe resume orchestration."""
+"""Deterministic experiment execution and crash-safe resume orchestration."""
 
 from __future__ import annotations
 
@@ -6,16 +6,26 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol, Self, assert_never, cast
+
+from pydantic import SerializeAsAny, model_validator
 
 from neurallm.control.action_space import ActionApplication, apply_action
+from neurallm.control.heuristic import HeuristicAdaptivePolicy, HeuristicAdaptiveState
 from neurallm.control.policy import (
     ControlPolicy,
     PolicyContext,
     PolicyState,
     PolicyTrace,
 )
-from neurallm.control.static import FixedPolicy
+from neurallm.control.random_policy import RandomMatchedPolicy, RandomMatchedState
+from neurallm.control.specs import (
+    BestStaticPolicySpec,
+    HeuristicAdaptivePolicySpec,
+    PolicySpec,
+    RandomMatchedPolicySpec,
+)
+from neurallm.control.static import BestStaticPolicy, FixedPolicy
 from neurallm.domain.models import (
     ControllerObservation,
     ProviderIdentity,
@@ -35,6 +45,7 @@ from neurallm.storage import (
     ResumeAction,
     SQLiteRunStore,
     StoreInvariantError,
+    TurnInputEvidence,
     TurnState,
 )
 
@@ -43,6 +54,24 @@ class AppliedPolicyTrace(PolicyTrace):
     """Policy decision plus every auditable action-clamping stage."""
 
     action_application: ActionApplication
+
+
+class DetailedAppliedPolicyTrace(AppliedPolicyTrace):
+    """Phase 3 action evidence retaining the policy-specific decision trace."""
+
+    trace_schema_version: Literal["phase3-applied-policy-trace-v1"] = (
+        "phase3-applied-policy-trace-v1"
+    )
+    history_access: Literal["none", "own_previous_response"]
+    observation_has_previous_response: bool
+    policy_trace: SerializeAsAny[PolicyTrace]
+
+    @model_validator(mode="after")
+    def validate_history_access(self) -> Self:
+        expected = self.history_access == "own_previous_response" and self.turn_index > 0
+        if self.observation_has_previous_response != expected:
+            raise ValueError("policy observation history does not match declared access")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +89,7 @@ class PolicyRuntime:
     policy: ControlPolicy
     state_type: type[PolicyState]
     config_sha256: str
+    history_access: Literal["none", "own_previous_response"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,8 +153,54 @@ def build_fixed_policy_runtimes(plan: ExperimentPlan) -> Mapping[str, PolicyRunt
                     "policy_id": policy_id,
                 }
             ),
+            history_access="none",
         )
         for policy_id in policy_ids
+    }
+
+
+def _runtime_from_policy_spec(spec: PolicySpec) -> PolicyRuntime:
+    """Construct one typed policy runtime from its immutable specification."""
+
+    if isinstance(spec, BestStaticPolicySpec):
+        return PolicyRuntime(
+            policy=BestStaticPolicy(spec),
+            state_type=PolicyState,
+            config_sha256=canonical_sha256(spec),
+            history_access=spec.history_access,
+        )
+    if isinstance(spec, RandomMatchedPolicySpec):
+        return PolicyRuntime(
+            policy=cast(ControlPolicy, RandomMatchedPolicy(spec)),
+            state_type=RandomMatchedState,
+            config_sha256=canonical_sha256(spec),
+            history_access=spec.history_access,
+        )
+    if isinstance(spec, HeuristicAdaptivePolicySpec):
+        return PolicyRuntime(
+            policy=cast(ControlPolicy, HeuristicAdaptivePolicy(spec)),
+            state_type=HeuristicAdaptiveState,
+            config_sha256=canonical_sha256(spec),
+            history_access=spec.history_access,
+        )
+    assert_never(spec)
+
+
+def build_policy_runtimes(
+    plan: ExperimentPlan,
+    policy_specs: tuple[PolicySpec, ...],
+) -> Mapping[str, PolicyRuntime]:
+    """Build typed policy runtimes that exactly cover a Phase 3 plan."""
+
+    planned_policy_ids = {turn.condition.policy_id for turn in plan.turns}
+    configured_policy_ids = tuple(spec.policy_id for spec in policy_specs)
+    if len(configured_policy_ids) != len(set(configured_policy_ids)):
+        raise ValueError("policy specifications must not contain duplicate policy identifiers")
+    if set(configured_policy_ids) != planned_policy_ids:
+        raise ValueError("policy specifications do not exactly cover the experiment plan")
+    return {
+        spec.policy_id: _runtime_from_policy_spec(spec)
+        for spec in sorted(policy_specs, key=lambda item: item.policy_id)
     }
 
 
@@ -141,6 +217,11 @@ def build_run_manifest(
     planned_policy_ids = {turn.condition.policy_id for turn in plan.turns}
     if set(policy_runtimes) != planned_policy_ids:
         raise ValueError("policy runtimes do not exactly cover the experiment plan")
+    phase3_analysis_contract_sha256 = None
+    if plan.evaluation is not None:
+        from neurallm.experiments.analysis import build_phase3_analysis_contract_sha256
+
+        phase3_analysis_contract_sha256 = build_phase3_analysis_contract_sha256(plan)
     return RunManifest(
         source_commit=provenance.source_commit,
         working_tree_clean=provenance.working_tree_clean,
@@ -162,6 +243,7 @@ def build_run_manifest(
         decoding_bounds=plan.decoding_bounds,
         decision_rule_version=plan.decision_rule_version,
         database_schema_version=plan.database_schema_version,
+        phase3_analysis_contract_sha256=phase3_analysis_contract_sha256,
     )
 
 
@@ -185,7 +267,11 @@ def _policy_decision(
     previous_condition_id: str | None,
     runtime: PolicyRuntime,
     plan: ExperimentPlan,
-) -> tuple[GenerationRequest, PolicyState, AppliedPolicyTrace]:
+) -> tuple[
+    GenerationRequest,
+    PolicyState,
+    AppliedPolicyTrace | DetailedAppliedPolicyTrace,
+]:
     if previous_condition_id is None:
         if turn.condition.turn_index != 0:
             raise StoreInvariantError("nonzero plan turn has no immediate predecessor")
@@ -201,7 +287,9 @@ def _policy_decision(
         if turn.condition.turn_index == 0:
             raise StoreInvariantError("turn zero cannot bind previous history")
         committed = store.get_committed_history(previous_condition_id)
-        previous_metrics = committed.metrics
+        previous_metrics = (
+            committed.metrics if runtime.history_access == "own_previous_response" else None
+        )
         policy_state = store.load_policy_state(previous_condition_id, runtime.state_type)
 
     observation = ControllerObservation(
@@ -229,12 +317,24 @@ def _policy_decision(
         decoding_parameters=application.final_decoding_parameters,
         condition=turn.condition,
     )
-    trace = AppliedPolicyTrace(
-        policy_id=proposed_trace.policy_id,
-        turn_index=proposed_trace.turn_index,
-        action=application.step_clamped_action,
-        action_application=application,
-    )
+    trace: AppliedPolicyTrace | DetailedAppliedPolicyTrace
+    if plan.database_schema_version >= 2:
+        trace = DetailedAppliedPolicyTrace(
+            policy_id=proposed_trace.policy_id,
+            turn_index=proposed_trace.turn_index,
+            action=application.step_clamped_action,
+            action_application=application,
+            history_access=runtime.history_access,
+            observation_has_previous_response=previous_metrics is not None,
+            policy_trace=proposed_trace,
+        )
+    else:
+        trace = AppliedPolicyTrace(
+            policy_id=proposed_trace.policy_id,
+            turn_index=proposed_trace.turn_index,
+            action=application.step_clamped_action,
+            action_application=application,
+        )
     return request, next_state, trace
 
 
@@ -303,7 +403,18 @@ def execute_plan(
                 if previous_condition_id is None
                 else store.history_binding_for(previous_condition_id)
             )
-            stored = store.prepare_turn(request, history)
+            input_evidence = (
+                TurnInputEvidence(
+                    condition_id=condition_id,
+                    prompt_case_id=turn.prompt_case_id,
+                    prompt_family=turn.prompt_family,
+                    prompt_features=turn.prompt_features,
+                    validator=turn.validator,
+                )
+                if manifest.database_schema_version >= 2
+                else None
+            )
+            stored = store.prepare_turn(request, history, input_evidence)
             action = store.resume_action(condition_id)
 
             if action is ResumeAction.DISPATCH_PREPARED:
@@ -397,10 +508,12 @@ def execute_plan(
 __all__ = [
     "AppliedPolicyTrace",
     "CheckpointHook",
+    "DetailedAppliedPolicyTrace",
     "ExecutionSummary",
     "GitProvenance",
     "PolicyRuntime",
     "build_fixed_policy_runtimes",
+    "build_policy_runtimes",
     "build_run_manifest",
     "execute_plan",
     "read_git_provenance",

@@ -7,14 +7,14 @@ provider:
   kind: fake
   expected_identity:
     provider_type: fake
-    implementation_version: 1.0.0
+    implementation_version: 2.0.0
     model_alias: deterministic-fake
     build_id: builtin
-    provider_config_hash: a8cb2dd6d609a48b0ffe780a7b8104b7a1cb3cf912713536a14273ddc148ef68
+    provider_config_hash: 62dd2cef1f89c1ba05ecef467ecd094c6ed2107f30a303ab81e2a7eef2dcf8f7
     model_path: null
     model_sha256: null
     chat_template_sha256: null
-  expected_effective_configuration_json: '{"generation_method":"request_sha256_v1","implementation_version":"1.0.0","provider_type":"fake"}'
+  expected_effective_configuration_json: '{"generation_method":"fake_provider_visible_sha256_v2","implementation_version":"2.0.0","provider_type":"fake"}'
 policy_ids:
   - kernel_fixed
 model_seeds:

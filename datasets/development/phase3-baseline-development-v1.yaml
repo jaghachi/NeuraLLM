@@ -1,0 +1,310 @@
+schema_version: 1
+dataset_id: phase3-baseline-development
+version: phase3-baseline-development-v1
+purpose: development
+sequences:
+  - sequence_id: dev-constrained-format
+    cases:
+      - case_id: dev-constrained-format-0
+        prompt_family: constrained_instruction
+        prompt: Explain how to verify a local backup. Use four numbered lines labeled 1., 2., 3., and 4.
+        prompt_features:
+          constraint_count: 4.0
+          target_length: 80.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - "1."
+            - "2."
+            - "3."
+            - "4."
+      - case_id: dev-constrained-format-1
+        prompt_family: constrained_instruction
+        prompt: Return a JSON object describing the verification with the keys action, evidence, and risk.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 80.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - action
+            - evidence
+            - risk
+      - case_id: dev-constrained-format-2
+        prompt_family: constrained_instruction
+        prompt: Summarize the decision using both the words ALLOW and DENY, with one condition for each.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 80.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - ALLOW
+            - DENY
+      - case_id: dev-constrained-format-3
+        prompt_family: constrained_instruction
+        prompt: Return exactly READY and no other text.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+        validator:
+          kind: exact_match
+          expected_text: READY
+
+  - sequence_id: dev-longform-exposition
+    cases:
+      - case_id: dev-longform-exposition-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Write a cohesive explanation of soil restoration at approximately 160 tokens. Include the anchors erosion, microbes, and monitoring while avoiding repetitive conclusions.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.7
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - erosion
+            - microbes
+            - monitoring
+      - case_id: dev-longform-exposition-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue at approximately 160 tokens with a distinct implementation section. Include baseline, intervention, and measurement without repeating the prior conclusion.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.8
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - baseline
+            - intervention
+            - measurement
+      - case_id: dev-longform-exposition-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Add an approximately 160-token failure analysis. Include drought, compaction, and recovery, and finish with one new conclusion.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.9
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - drought
+            - compaction
+            - recovery
+      - case_id: dev-longform-exposition-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Produce an approximately 160-token synthesis with the anchors diversity, resilience, and evidence. Do not reuse a paragraph from an earlier turn.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - diversity
+            - resilience
+            - evidence
+
+  - sequence_id: dev-longform-recovery
+    cases:
+      - case_id: dev-longform-recovery-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: At approximately 160 tokens, explain how a distributed queue handles bursts. Include producer, consumer, and backlog.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.7
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - producer
+            - consumer
+            - backlog
+      - case_id: dev-longform-recovery-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue at approximately 160 tokens and compare retry, timeout, and dead-letter handling. Keep each concept distinct.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.8
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - retry
+            - timeout
+            - dead-letter
+      - case_id: dev-longform-recovery-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Write an approximately 160-token stress scenario using the terms overload, duplicate, and recovery without looping.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - overload
+            - duplicate
+            - recovery
+      - case_id: dev-longform-recovery-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Conclude at approximately 160 tokens with a fresh operational checklist containing capacity, idempotency, and alerting.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.9
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - capacity
+            - idempotency
+            - alerting
+
+  - sequence_id: dev-mixed-transition
+    cases:
+      - case_id: dev-mixed-transition-0
+        prompt_family: mixed_transition
+        prompt: Return a JSON object with the keys observation and hypothesis for a dimming greenhouse sensor.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 64.0
+          transition_intensity: 0.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - observation
+            - hypothesis
+      - case_id: dev-mixed-transition-1
+        prompt_family: mixed_transition
+        prompt: Switch to prose and explain the same situation using the words calibration and shadow.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 96.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - calibration
+            - shadow
+      - case_id: dev-mixed-transition-2
+        prompt_family: mixed_transition
+        prompt: Ignore the previous format and return exactly INSPECT.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+          transition_intensity: 1.0
+        validator:
+          kind: exact_match
+          expected_text: INSPECT
+      - case_id: dev-mixed-transition-3
+        prompt_family: mixed_transition
+        prompt: Recover to structured output with a JSON object containing diagnosis, test, and outcome.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 80.0
+          transition_intensity: 1.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - diagnosis
+            - test
+            - outcome
+
+  - sequence_id: dev-creative-constrained
+    cases:
+      - case_id: dev-creative-constrained-0
+        prompt_family: creative_constrained
+        prompt: Write a compact micro-scene set at a lighthouse. Include the words lantern, tide, and brass.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - lantern
+            - tide
+            - brass
+      - case_id: dev-creative-constrained-1
+        prompt_family: creative_constrained
+        prompt: Continue the scene from a different viewpoint and include keeper, gull, and fog.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - keeper
+            - gull
+            - fog
+      - case_id: dev-creative-constrained-2
+        prompt_family: creative_constrained
+        prompt: Return a JSON object representing the scene with the keys setting, object, and sound.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - setting
+            - object
+            - sound
+      - case_id: dev-creative-constrained-3
+        prompt_family: creative_constrained
+        prompt: End with one sentence containing beacon and dawn.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 40.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - beacon
+            - dawn
+
+  - sequence_id: dev-creative-revision
+    cases:
+      - case_id: dev-creative-revision-0
+        prompt_family: creative_constrained
+        prompt: Draft a short museum placard that includes comet, glass, and archive.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 88.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - comet
+            - glass
+            - archive
+      - case_id: dev-creative-revision-1
+        prompt_family: creative_constrained
+        prompt: Revise the placard for children and include orbit, light, and discovery.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 88.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - orbit
+            - light
+            - discovery
+      - case_id: dev-creative-revision-2
+        prompt_family: creative_constrained
+        prompt: Express the exhibit as a JSON object with title, material, and era.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 88.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - title
+            - material
+            - era
+      - case_id: dev-creative-revision-3
+        prompt_family: creative_constrained
+        prompt: Return exactly EXHIBIT_READY.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+        validator:
+          kind: exact_match
+          expected_text: EXHIBIT_READY

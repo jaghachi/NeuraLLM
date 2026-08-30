@@ -1,4 +1,4 @@
-"""Provider-free preparation and explicitly authorized Phase 2 execution."""
+"""Provider-free preparation and explicitly authorized experiment execution."""
 
 from __future__ import annotations
 
@@ -6,14 +6,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from neurallm.domain.serialization import canonical_json, canonical_sha256
-from neurallm.experiments.config import LoadedExperimentConfig, load_experiment_config
-from neurallm.experiments.dataset import LoadedDataset, load_dataset
+from neurallm.evaluation.models import DatasetPurpose
+from neurallm.experiments.analysis import analyze_closed_run
+from neurallm.experiments.config import (
+    DatasetReference,
+    LoadedExperimentConfig,
+    load_experiment_config,
+)
+from neurallm.experiments.dataset import (
+    LoadedDataset,
+    load_dataset,
+    validate_dataset_identity,
+)
 from neurallm.experiments.plan import ExperimentPlan, build_plan
 from neurallm.experiments.runner import (
     ExecutionSummary,
     GitProvenance,
     PolicyRuntime,
     build_fixed_policy_runtimes,
+    build_policy_runtimes,
     build_run_manifest,
     execute_plan,
     read_git_provenance,
@@ -49,6 +60,7 @@ class PreparedExperiment:
     plan: ExperimentPlan
     provenance: GitProvenance
     policy_runtimes: dict[str, PolicyRuntime]
+    development_selection_dataset: LoadedDataset | None = None
 
     @property
     def artifact_identity_sha256(self) -> str:
@@ -71,6 +83,36 @@ class WorkflowExecutionSummary:
     artifacts: ArtifactExportSummary
 
 
+def _load_declared_dataset(path: Path, reference: DatasetReference) -> LoadedDataset:
+    """Load and validate one dataset against its complete declared identity."""
+
+    loaded_dataset = load_dataset(path, expected_version=reference.version)
+    validate_dataset_identity(
+        loaded_dataset.dataset,
+        expected_version=reference.version,
+        expected_purpose=reference.purpose,
+        expected_sha256=reference.expected_dataset_sha256,
+        seal=reference.seal,
+    )
+    return loaded_dataset
+
+
+def _load_development_selection_dataset(
+    loaded_config: LoadedExperimentConfig,
+) -> LoadedDataset | None:
+    selection_input = loaded_config.config.development_selection_input
+    if selection_input is None:
+        if loaded_config.development_selection_dataset_path is not None:
+            raise ValueError("unexpected development-selection dataset path")
+        return None
+    if selection_input.dataset.purpose is not DatasetPurpose.DEVELOPMENT:
+        raise ValueError("development-selection input must have development purpose")
+    selection_path = loaded_config.development_selection_dataset_path
+    if selection_path is None:
+        raise ValueError("development-selection input requires an explicit dataset path")
+    return _load_declared_dataset(selection_path, selection_input.dataset)
+
+
 def prepare_experiment(
     config_path: Path,
     *,
@@ -80,12 +122,18 @@ def prepare_experiment(
 
     loaded_config = load_experiment_config(config_path)
     _validate_declared_provider_configuration(loaded_config)
-    loaded_dataset = load_dataset(
+    loaded_dataset = _load_declared_dataset(
         loaded_config.dataset_path,
-        expected_version=loaded_config.config.dataset.version,
+        loaded_config.config.dataset,
     )
+    development_selection_dataset = _load_development_selection_dataset(loaded_config)
     plan = build_plan(loaded_config, loaded_dataset)
-    policy_runtimes = dict(build_fixed_policy_runtimes(plan))
+    policy_specs = loaded_config.config.policy_specs
+    policy_runtimes = dict(
+        build_fixed_policy_runtimes(plan)
+        if policy_specs is None
+        else build_policy_runtimes(plan, policy_specs)
+    )
     resolved_provenance = provenance or read_git_provenance(loaded_config.source_path)
     return PreparedExperiment(
         loaded_config=loaded_config,
@@ -93,6 +141,7 @@ def prepare_experiment(
         plan=plan,
         provenance=resolved_provenance,
         policy_runtimes=policy_runtimes,
+        development_selection_dataset=development_selection_dataset,
     )
 
 
@@ -186,6 +235,15 @@ def execute_prepared(prepared: PreparedExperiment) -> WorkflowExecutionSummary:
     finally:
         if isinstance(provider, LlamaCppProvider):
             provider.close()
+    if prepared.plan.evaluation is not None:
+        selection = prepared.loaded_config.config.static_selection_record
+        if selection is None:
+            raise ValueError("Phase 3 execution lacks frozen static-selection evidence")
+        analyze_closed_run(
+            prepared.plan,
+            selection,
+            output_directory / "run.sqlite3",
+        )
     artifacts = export_closed_run(output_directory)
     return WorkflowExecutionSummary(execution=execution, artifacts=artifacts)
 

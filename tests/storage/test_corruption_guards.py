@@ -11,6 +11,7 @@ from neurallm.control.policy import PolicyState
 from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.providers.fake import FakeProvider
 from neurallm.storage import (
+    CURRENT_SCHEMA_VERSION,
     SchemaVersionError,
     SQLiteRunStore,
     StoreCorruptionError,
@@ -172,7 +173,7 @@ def test_stored_manifest_schema_version_is_revalidated(tmp_path: Path) -> None:
     manifest = make_manifest(provider.provider_identity)
     with SQLiteRunStore(database, manifest):
         pass
-    wrong = manifest.model_copy(update={"database_schema_version": 2})
+    wrong = manifest.model_copy(update={"database_schema_version": CURRENT_SCHEMA_VERSION + 1})
     with sqlite3.connect(database) as connection:
         connection.execute(
             """
@@ -183,7 +184,7 @@ def test_stored_manifest_schema_version_is_revalidated(tmp_path: Path) -> None:
         )
 
     with SQLiteRunStore(database) as store:
-        with pytest.raises(StoreCorruptionError, match="another database schema"):
+        with pytest.raises(StoreCorruptionError, match="unsupported database schema"):
             store.get_manifest()
 
 
@@ -200,7 +201,7 @@ def test_application_and_migration_identity_are_enforced(tmp_path: Path) -> None
     with SQLiteRunStore(wrong_migration):
         pass
     with sqlite3.connect(wrong_migration) as connection:
-        connection.execute("UPDATE schema_migrations SET name = 'tampered'")
+        connection.execute("UPDATE schema_migrations SET name = 'tampered' WHERE version = 1")
     with pytest.raises(SchemaVersionError, match="migration history"):
         SQLiteRunStore(wrong_migration)
 

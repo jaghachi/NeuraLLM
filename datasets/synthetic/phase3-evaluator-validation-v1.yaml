@@ -1,0 +1,177 @@
+# synthetic_effect_code is inert experiment metadata. A provider-free integration
+# harness converts each code into independent evaluator records; FakeProvider and
+# production runtime do not read the code or manufacture these known outcomes.
+schema_version: 1
+dataset_id: phase3-evaluator-validation
+version: phase3-evaluator-validation-v1
+purpose: synthetic
+sequences:
+  - sequence_id: synthetic-known-superior
+    cases:
+      - case_id: synthetic-known-superior-0
+        prompt_family: synthetic_known_superior
+        prompt: Synthetic superior condition, turn zero. Return a non-empty response.
+        prompt_features:
+          synthetic_effect_code: 1.0
+          target_length: 64.0
+        validator:
+          kind: non_empty
+      - case_id: synthetic-known-superior-1
+        prompt_family: synthetic_known_superior
+        prompt: Synthetic superior condition, first adaptive turn. Include superior and recovery.
+        prompt_features:
+          synthetic_effect_code: 1.0
+          target_length: 64.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - superior
+            - recovery
+      - case_id: synthetic-known-superior-2
+        prompt_family: synthetic_known_superior
+        prompt: Synthetic superior condition, second adaptive turn. Return a JSON object with score and evidence.
+        prompt_features:
+          synthetic_effect_code: 1.0
+          target_length: 64.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - score
+            - evidence
+      - case_id: synthetic-known-superior-3
+        prompt_family: synthetic_known_superior
+        prompt: Synthetic superior condition, final turn. Return exactly SUPERIOR_DONE.
+        prompt_features:
+          synthetic_effect_code: 1.0
+          target_length: 1.0
+        validator:
+          kind: exact_match
+          expected_text: SUPERIOR_DONE
+
+  - sequence_id: synthetic-known-inferior
+    cases:
+      - case_id: synthetic-known-inferior-0
+        prompt_family: synthetic_known_inferior
+        prompt: Synthetic inferior condition, turn zero. Return a non-empty response.
+        prompt_features:
+          synthetic_effect_code: -1.0
+          target_length: 64.0
+        validator:
+          kind: non_empty
+      - case_id: synthetic-known-inferior-1
+        prompt_family: synthetic_known_inferior
+        prompt: Synthetic inferior condition, first adaptive turn. Include inferior and regression.
+        prompt_features:
+          synthetic_effect_code: -1.0
+          target_length: 64.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - inferior
+            - regression
+      - case_id: synthetic-known-inferior-2
+        prompt_family: synthetic_known_inferior
+        prompt: Synthetic inferior condition, second adaptive turn. Return a JSON object with score and evidence.
+        prompt_features:
+          synthetic_effect_code: -1.0
+          target_length: 64.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - score
+            - evidence
+      - case_id: synthetic-known-inferior-3
+        prompt_family: synthetic_known_inferior
+        prompt: Synthetic inferior condition, final turn. Return exactly INFERIOR_DONE.
+        prompt_features:
+          synthetic_effect_code: -1.0
+          target_length: 1.0
+        validator:
+          kind: exact_match
+          expected_text: INFERIOR_DONE
+
+  - sequence_id: synthetic-identical-equivalent
+    cases:
+      - case_id: synthetic-identical-equivalent-0
+        prompt_family: synthetic_identical_equivalent
+        prompt: Synthetic equivalence condition, turn zero. Return a non-empty response.
+        prompt_features:
+          synthetic_effect_code: 0.0
+          target_length: 64.0
+        validator:
+          kind: non_empty
+      - case_id: synthetic-identical-equivalent-1
+        prompt_family: synthetic_identical_equivalent
+        prompt: Synthetic equivalence condition, first adaptive turn. Include identical and paired.
+        prompt_features:
+          synthetic_effect_code: 0.0
+          target_length: 64.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - identical
+            - paired
+      - case_id: synthetic-identical-equivalent-2
+        prompt_family: synthetic_identical_equivalent
+        prompt: Synthetic equivalence condition, second adaptive turn. Return a JSON object with score and evidence.
+        prompt_features:
+          synthetic_effect_code: 0.0
+          target_length: 64.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - score
+            - evidence
+      - case_id: synthetic-identical-equivalent-3
+        prompt_family: synthetic_identical_equivalent
+        prompt: Synthetic equivalence condition, final turn. Return exactly EQUIVALENT_DONE.
+        prompt_features:
+          synthetic_effect_code: 0.0
+          target_length: 1.0
+        validator:
+          kind: exact_match
+          expected_text: EQUIVALENT_DONE
+
+  - sequence_id: synthetic-length-confound
+    cases:
+      - case_id: synthetic-length-confound-0
+        prompt_family: synthetic_length_confound
+        prompt: Synthetic length-confound condition, turn zero. Return a non-empty response.
+        prompt_features:
+          synthetic_effect_code: 2.0
+          target_length: 160.0
+        validator:
+          kind: non_empty
+      - case_id: synthetic-length-confound-1
+        prompt_family: synthetic_length_confound
+        prompt: Synthetic length-confound condition, first adaptive turn. Include length and repetition.
+        prompt_features:
+          synthetic_effect_code: 2.0
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - length
+            - repetition
+      - case_id: synthetic-length-confound-2
+        prompt_family: synthetic_length_confound
+        prompt: Synthetic length-confound condition, second adaptive turn. Return a JSON object with length and evidence.
+        prompt_features:
+          synthetic_effect_code: 2.0
+          target_length: 160.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - length
+            - evidence
+      - case_id: synthetic-length-confound-3
+        prompt_family: synthetic_length_confound
+        prompt: Synthetic length-confound condition, final turn. Include guardrail and fail.
+        prompt_features:
+          synthetic_effect_code: 2.0
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - guardrail
+            - fail

@@ -1,14 +1,21 @@
-# Phase 2 metric definitions
+# Metric and Phase 3 evaluator definitions
 
 ## Claim boundary
 
-Phase 2 computes deterministic response-level metrics and objective validators
-for the experiment kernel. These values exercise storage, reconstruction, and
-reporting. They do not implement the Phase 3 paired evaluator, calculate the
-confirmatory `guardrail_clean_task_score`, compare policies, or support an
-efficacy claim.
+The current implementation computes deterministic response-level metrics and
+uses a strict subset of them in the Phase 3 paired baseline evaluator. Phase 3
+adds exact coverage, nested aggregation, deterministic paired statistics,
+guardrails, and a limited verdict skeleton. The checked-in fixtures use the fake
+provider and contain no neural policy.
 
-Every metric is stored as a strict provenance-bearing record:
+These definitions do not establish live-provider validity, neural efficacy,
+model-backed efficacy, or persistent-state attribution. A Phase 3 verdict has
+claim scope `phase-3-statistical-behavior-only`; `scientific_decision` remains
+`null`.
+
+## Response-level provenance
+
+Every response metric is stored as a strict provenance-bearing record:
 
 ```text
 value | null
@@ -24,7 +31,7 @@ validator specification.
 
 ## Tokenization
 
-The Phase 2 repetition and diversity metrics use
+The repetition and diversity metrics use
 `unicode-nfkc-casefold-whitespace-v1`:
 
 1. Normalize the response with Unicode NFKC.
@@ -34,17 +41,17 @@ The Phase 2 repetition and diversity metrics use
 This is an intentionally small deterministic text tokenizer, not the evaluated
 model's tokenizer. Empty or whitespace-only responses produce zero tokens.
 
-## Implemented metric tuple
+## Implemented response metric tuple
 
-For a token sequence of length `N`, let `U` be the number of unique tokens. For
-an n-gram order `n`, let `G_n = max(N - n + 1, 0)` and `U_n` be the number of
-unique observed n-grams.
+For a token sequence of length `N`, let `U` be the number of unique tokens.
+For n-gram order `n`, let `G_n = max(N - n + 1, 0)` and `U_n` be the number
+of unique observed n-grams.
 
-| Metric | Phase 2 definition | Empty or too-short input |
+| Metric | Definition | Empty or too-short input |
 | --- | --- | --- |
 | `task_score` | Normalized result from the prompt case's deterministic validator | Validator-defined |
-| `instruction_adherence` | The same deterministic validator score in Phase 2 | Validator-defined |
-| `response_length_tokens` | `N` after Phase 2 tokenization | `0` |
+| `instruction_adherence` | The same deterministic validator score in the current implementation | Validator-defined |
+| `response_length_tokens` | `N` after deterministic tokenization | `0` |
 | `repetition_ratio` | `(N - U) / N` | `0.0` when `N = 0` |
 | `repeated_3_gram_ratio` | `(G_3 - U_3) / G_3` | `0.0` when `G_3 = 0` |
 | `repeated_4_gram_ratio` | `(G_4 - U_4) / G_4` | `0.0` when `G_4 = 0` |
@@ -52,11 +59,15 @@ unique observed n-grams.
 | `distinct_3` | `U_3 / G_3` | `0.0` when `G_3 = 0` |
 | `late_window_repetition_ratio` | Repeated tokens in the final quarter divided by final-quarter length | `0.0` when `N < 2` |
 | `format_validity` | Validator-specific structural validity | Validator-defined |
-| `semantic_similarity` | Explicitly unavailable in Phase 2 | `value = null`, `availability = false` |
+| `semantic_similarity` | Explicitly unavailable | `value = null`, `availability = false` |
 
 The late window has `max(1, floor(N / 4))` tokens. Its initial seen set contains
 all earlier tokens. A final-window token counts as repeated when it has already
 appeared either before the window or earlier within the window.
+
+For all implemented validators, `instruction_adherence` currently equals
+`task_score`. This is a deterministic kernel contract, not an assertion that
+the two constructs are scientifically interchangeable.
 
 ## Objective validators
 
@@ -69,14 +80,9 @@ Dataset cases select exactly one strict validator:
 | `exact_match` | Non-blank `expected_text`; optional `case_sensitive` | Score is `1.0` only when the full strings match under the selected case rule. No whitespace repair occurs. Format validity records stripped non-emptiness. |
 | `json_object` | Non-empty unique `required_json_keys` | The response must parse as a JSON object. Duplicate object keys and non-finite JSON numbers are rejected. Score is the fraction of required keys present; format validity is `1.0` for any valid JSON object. |
 
-For all four validator kinds, Phase 2 assigns `instruction_adherence` the same
-normalized value as `task_score`. This is a deterministic kernel contract, not
-an assertion that the two constructs are scientifically interchangeable.
+## Frozen metric versions
 
-## Frozen versions
-
-The experiment configuration must match the implementation's complete metric
-version map exactly:
+An experiment configuration must match the complete implementation map exactly:
 
 | Metric | Version |
 | --- | --- |
@@ -94,14 +100,169 @@ version map exactly:
 
 A version mismatch fails planning instead of silently mixing definitions.
 
+## Phase 3 evaluator inputs
+
+One `TurnEvaluationRecord` binds the dataset hash, prompt sequence, turn,
+policy, model seed, controller seed, provider identity, history-presence
+semantics, required metrics, and action evidence. The evaluator requires these
+metrics for every planned condition:
+
+```text
+task_score
+instruction_adherence
+response_length_tokens
+repetition_ratio
+```
+
+It also records:
+
+- normalized action magnitude: root-mean-square magnitude of the four
+  step-clamped action components after each is divided by the maximum absolute
+  value of its configured bound;
+- action-bound compliance, checked against the raw declared action; and
+- whether legal decoding application saturated any controlled dimension.
+
+Missing required metrics are invalid evidence. They are not imputed.
+
+## Exact coverage and statistical unit
+
+The evaluator expands the frozen design into every expected key:
+
+```text
+prompt_sequence_id
+turn_index
+policy_id
+model_seed
+controller_seed
+```
+
+Observed keys must match this Cartesian grid exactly. Missing, unexpected, or
+duplicate keys fail `matched_condition_coverage`. Dataset and provider identity,
+turn-zero history semantics, action bounds, and required metric availability are
+also validated before aggregation. If any integrity guardrail is invalid, the
+result is `invalid`, `statistics_call_count` is zero, and no outcomes or
+comparisons are produced.
+
+The primary statistical unit is:
+
+```text
+prompt sequence x model seed
+```
+
+The frozen aggregation version is
+`mean-controller-seed-then-turn-v1`:
+
+1. For each policy, prompt sequence, model seed, and controller seed, average
+   each required metric and action measure across turns.
+2. Average those controller-seed means for the policy's prompt-sequence by
+   model-seed unit.
+3. Pair the focal and comparator unit values by the exact prompt-sequence and
+   model-seed key.
+
+Turns and controller seeds stay nested and never inflate `unit_count`.
+Pairwise estimates are focal-minus-comparator mean differences in
+`task_score`.
+
+## Paired statistical methods
+
+The evaluator records deterministic method versions, resample counts, and
+seeds.
+
+### Paired bootstrap
+
+`paired-bootstrap-percentile-v1` resamples complete matched-unit differences
+with replacement, computes each resampled mean, and returns the configured
+percentile interval. The estimate is the arithmetic mean of the original paired
+differences.
+
+### Paired sign-flip test
+
+`paired-sign-flip-exact-or-monte-carlo-v1` is a two-sided test on the absolute
+mean paired difference:
+
+- for at most 20 matched units, all `2^N` sign patterns are enumerated when
+  that count does not exceed the configured resample budget;
+- otherwise the method uses a deterministic seeded Monte Carlo sign stream and
+  the add-one p-value correction `(extreme + 1) / (performed + 1)`.
+
+### Multiplicity
+
+`holm-v1` applies the Holm step-down adjustment to required serious
+comparators. Negative controls are reported but excluded from that family.
+
+The checked-in Phase 3 configurations freeze:
+
+| Setting | Value |
+| --- | --- |
+| Bootstrap resamples | `10,000` |
+| Confidence level | `0.95` |
+| Sign-flip resamples | `10,000` |
+| Practical-effect threshold | `0.02` |
+| Equivalence margin | `0.005` |
+| Maximum adherence regression | `0.01` |
+| Maximum response-length reduction | `0.05` |
+| Maximum focal action-saturation rate | `0.05` |
+| Required matched coverage | `1.0` |
+| Behavioral-alias tolerance | `0.0` |
+
+The resampling seeds differ between the baseline-evaluation and synthetic
+fixtures and are part of each `EvaluationSpec`.
+
+## Guardrails
+
+Phase 3 emits explicit machine-readable guardrails:
+
+| Guardrail | Implemented rule |
+| --- | --- |
+| `matched_condition_coverage` | Observed keys exactly equal the frozen grid and every record carries the frozen dataset hash. Failure is invalid. |
+| `provider_identity_stability` | Every record carries exactly the frozen provider identity. Failure is invalid. |
+| `turn_zero_equivalence` | Every turn-zero record has `has_previous_response = false` and no previous history commitment. Failure is invalid. |
+| `action_bound_compliance` | Every raw policy action is within the frozen action bounds. Failure is invalid. |
+| `metric_availability` | Every required Phase 3 metric is present. Failure is invalid. |
+| `action_saturation_rate` | The focal policy's turn-level saturation rate does not exceed the configured maximum. Failure is substantive. |
+| `instruction_adherence_non_regression` | The matched focal-minus-comparator adherence mean is no worse than the configured negative margin. Failure is substantive. |
+| `response_length_confound` | For matched units with improved repetition, the maximum within-unit response-shortening ratio is compared with the configured limit. This prevents lengthening elsewhere from canceling a shortening-based gain. |
+| `behavioral_alias_detection` | All matched differences in task score, adherence, length, repetition, action magnitude, and action saturation are within the alias tolerance. Alias evidence supports `equivalent`, not superiority. |
+
+The current turn-zero evaluator guardrail validates exact null/false history
+semantics. Separate policy tests establish that all three implemented Phase 3
+policies emit an exact zero action at turn zero.
+
+## Phase 3 verdict rules
+
+For one focal/comparator pair, substantive adherence, length-confound, or focal
+saturation failure yields `inferior`. Otherwise:
+
+- `equivalent` applies when behavior is aliased or the entire bootstrap
+  interval lies within `[-equivalence_margin, +equivalence_margin]`;
+- `superior` requires an estimate at least the practical threshold, a positive
+  bootstrap lower bound, and the applicable raw or Holm-adjusted p-value no
+  greater than `1 - confidence_level`;
+- `inferior` applies symmetrically for a negative estimate and negative
+  bootstrap upper bound; and
+- all other valid comparisons are `inconclusive`.
+
+The overall verdict uses serious comparators only: any serious `inferior`
+yields `inferior`; all serious `superior` yields `superior`; all serious
+`equivalent` yields `equivalent`; every other valid combination yields
+`inconclusive`. An integrity failure yields `invalid` before this logic.
+
+These are Phase 3 baseline-evaluator verdicts, not Phase 5 scientific decisions.
+
 ## Canonical and derived records
 
-The complete metric records, including availability, versions, and input hashes,
-remain in `run.sqlite3`. `results.csv` is a derived convenience view containing
-metric values and a dedicated semantic-availability column. The CSV does not
-replace the canonical database and must not be used to infer missing provenance.
+Complete response metrics and provenance remain in `run.sqlite3`.
+`results.csv` is a convenience view containing metric values and a dedicated
+semantic-availability column. It does not replace the canonical database.
 
-Phase 2 `comparisons.csv` contains only its header, and `decision.json` records a
-null scientific decision with `engineering_validation_only` claim scope. Policy
-comparisons, guardrail aggregation, confidence intervals, and final decision
-logic begin in later phases.
+Schema-v2 Phase 3 analysis stores the analysis manifest, comparisons,
+guardrails, Phase 3 result, and analysis finalization in the same database with
+canonical hashes and idempotent finalization. `comparisons.csv` exposes paired
+estimates, bootstrap bounds, sign-flip results, Holm values where applicable,
+alias and guardrail summaries, and pair verdicts. `decision.json` and
+`report.md` expose the limited Phase 3 verdict and evidence identities.
+`scientific_decision` remains null.
+
+Historical Phase 2 behavior is unchanged: `comparisons.csv` is header-only and
+`decision.json` uses `engineering_validation_only` scope with a null
+scientific decision.

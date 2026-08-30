@@ -18,7 +18,12 @@ from neurallm.domain.models import (
 from neurallm.domain.serialization import canonical_sha256
 from neurallm.providers.base import GenerationRequest, GenerationResponse
 from neurallm.providers.fake import FakeProvider, fake_provider_effective_configuration_json
-from neurallm.storage import CommittedHistory, HistoryBinding, SQLiteRunStore
+from neurallm.storage import (
+    CURRENT_SCHEMA_VERSION,
+    CommittedHistory,
+    HistoryBinding,
+    SQLiteRunStore,
+)
 
 
 def make_manifest(identity: ProviderIdentity) -> RunManifest:
@@ -37,7 +42,7 @@ def make_manifest(identity: ProviderIdentity) -> RunManifest:
         seed_schedule=SeedSchedule(model_seeds=(7,), controller_seeds=(11,)),
         action_bounds=ActionBounds(),
         decision_rule_version="test-v1",
-        database_schema_version=1,
+        database_schema_version=CURRENT_SCHEMA_VERSION,
     )
 
 
