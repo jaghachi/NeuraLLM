@@ -1,0 +1,37 @@
+schema_version: 1
+dataset_id: phase2-smoke
+version: phase2-smoke-v1
+sequences:
+  - sequence_id: constrained-sequence
+    cases:
+      - case_id: constrained-0
+        prompt_family: constrained
+        prompt: Return a deterministic non-empty response.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 64.0
+        validator:
+          kind: non_empty
+      - case_id: constrained-1
+        prompt_family: constrained
+        prompt: Preserve the prior causal history and return another response.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 64.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - "fake-response:"
+  - sequence_id: structured-sequence
+    cases:
+      - case_id: structured-0
+        prompt_family: structured
+        prompt: Return a JSON object containing answer and reason.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 64.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - answer
+            - reason

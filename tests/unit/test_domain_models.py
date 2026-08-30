@@ -12,6 +12,7 @@ from neurallm.domain.models import (
     ActionBounds,
     ControllerAction,
     ControllerObservation,
+    DecodingBounds,
     DecodingParameters,
     ExperimentCondition,
     MetricValue,
@@ -21,9 +22,12 @@ from neurallm.domain.models import (
     RunManifest,
     SeedSchedule,
 )
+from neurallm.domain.serialization import canonical_json, canonical_sha256
 
 ZERO_HASH = "0" * 64
 ONE_HASH = "1" * 64
+PROVIDER_CONFIG_JSON = canonical_json({"provider": "test"})
+PROVIDER_CONFIG_HASH = canonical_sha256({"provider": "test"})
 
 
 def make_metric(value: float = 0.5) -> MetricValue[float]:
@@ -46,8 +50,11 @@ def make_response_metrics() -> ResponseMetrics:
             input_hash=ZERO_HASH,
         ),
         repetition_ratio=make_metric(),
+        repeated_3_gram_ratio=make_metric(),
+        repeated_4_gram_ratio=make_metric(),
         distinct_2=make_metric(),
         distinct_3=make_metric(),
+        late_window_repetition_ratio=make_metric(),
         format_validity=make_metric(1.0),
         semantic_similarity=MetricValue[float](
             value=None,
@@ -64,7 +71,7 @@ def make_provider_identity() -> ProviderIdentity:
         implementation_version="1.0",
         model_alias="deterministic-fake",
         build_id="builtin",
-        provider_config_hash=ZERO_HASH,
+        provider_config_hash=PROVIDER_CONFIG_HASH,
     )
 
 
@@ -218,6 +225,23 @@ def test_action_bounds_are_configurable_and_manifest_bound() -> None:
 
     assert not ActionBounds().contains(action)
     assert custom_bounds.require(action) is action
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_bounds"),
+    [
+        ("temperature", (1.0, 0.5)),
+        ("top_p", (0.9, 0.8)),
+        ("top_k", (10, 9)),
+        ("presence_penalty", (1.0, -1.0)),
+    ],
+)
+def test_decoding_bounds_reject_inverted_intervals(
+    field_name: str,
+    invalid_bounds: tuple[float, float] | tuple[int, int],
+) -> None:
+    with pytest.raises(ValidationError, match="lower bound exceeds upper bound"):
+        DecodingBounds.model_validate({field_name: invalid_bounds})
 
 
 def test_controller_action_cannot_control_generation_budget() -> None:
@@ -379,8 +403,9 @@ def test_run_manifest_binds_and_freezes_phase_one_provenance() -> None:
         working_tree_clean=True,
         experiment_config_hash=ONE_HASH,
         dataset_hash=ONE_HASH,
-        provider_config_hash=ZERO_HASH,
+        provider_config_hash=PROVIDER_CONFIG_HASH,
         provider_identity=make_provider_identity(),
+        provider_effective_configuration_json=PROVIDER_CONFIG_JSON,
         policy_config_hashes={"static": ONE_HASH},
         metric_versions={"task_score": "v1"},
         seed_schedule=SeedSchedule(model_seeds=(1,), controller_seeds=(2,)),
@@ -393,6 +418,7 @@ def test_run_manifest_binds_and_freezes_phase_one_provenance() -> None:
         manifest.policy_config_hashes["random"] = ZERO_HASH  # type: ignore[index]
 
     assert manifest.action_bounds.temperature_delta == (-0.10, 0.10)
+    assert manifest.decoding_bounds == DecodingBounds()
 
 
 def test_run_manifest_rejects_provider_config_hash_mismatch() -> None:
@@ -404,6 +430,7 @@ def test_run_manifest_rejects_provider_config_hash_mismatch() -> None:
             dataset_hash=ONE_HASH,
             provider_config_hash=ONE_HASH,
             provider_identity=make_provider_identity(),
+            provider_effective_configuration_json=PROVIDER_CONFIG_JSON,
             policy_config_hashes={"static": ONE_HASH},
             metric_versions={"task_score": "v1"},
             seed_schedule=SeedSchedule(model_seeds=(1,), controller_seeds=(2,)),

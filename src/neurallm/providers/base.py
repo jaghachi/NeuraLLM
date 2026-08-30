@@ -1,10 +1,21 @@
 """Typed request and response boundary for text-generation providers."""
 
-from typing import Literal, Protocol, runtime_checkable
+import json
+from math import isclose
+from typing import Literal, Protocol, Self, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from neurallm.domain.models import DecodingParameters, ExperimentCondition, ProviderIdentity
+from neurallm.domain.models import (
+    DecodingParameters,
+    ExperimentCondition,
+    ProviderIdentity,
+    Sha256Hex,
+)
+from neurallm.domain.serialization import canonical_json, canonical_sha256
+
+DECODING_FLOAT_RELATIVE_TOLERANCE = 1e-6
+DECODING_FLOAT_ABSOLUTE_TOLERANCE = 1e-8
 
 
 class ProviderIdentityMismatchError(ValueError):
@@ -38,10 +49,61 @@ class GenerationRequest(_StrictFrozenModel):
 
 
 class GenerationMetadata(_StrictFrozenModel):
-    """Typed provider metadata required to reproduce a fake response."""
+    """Logical request identity plus retained provider-protocol payloads."""
 
-    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    generation_method: Literal["request_sha256_v1"] = "request_sha256_v1"
+    request_sha256: Sha256Hex
+    generation_method: Literal[
+        "request_sha256_v1",
+        "llama_cpp_completion_http_v1",
+    ] = "request_sha256_v1"
+    provider_request_json: str | None = None
+    provider_request_sha256: Sha256Hex | None = None
+    provider_response_json: str | None = None
+    provider_response_sha256: Sha256Hex | None = None
+
+    @staticmethod
+    def _validate_protocol_payload(value: str, digest: str, name: str) -> None:
+        try:
+            parsed: object = json.loads(value)
+            if not isinstance(parsed, dict) or not all(isinstance(key, str) for key in parsed):
+                raise ValueError(f"{name} must encode a JSON object")
+            if canonical_json(parsed) != value:
+                raise ValueError(f"{name} must be canonical JSON")
+            if canonical_sha256(parsed) != digest:
+                raise ValueError(f"{name} SHA-256 does not match its payload")
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"{name} must be finite canonical JSON") from exc
+
+    @model_validator(mode="after")
+    def _validate_protocol_evidence(self) -> Self:
+        values = (
+            self.provider_request_json,
+            self.provider_request_sha256,
+            self.provider_response_json,
+            self.provider_response_sha256,
+        )
+        has_protocol_evidence = all(value is not None for value in values)
+        if any(value is not None for value in values) != has_protocol_evidence:
+            raise ValueError("provider request/response payloads and hashes must be complete")
+        requires_protocol_evidence = self.generation_method == "llama_cpp_completion_http_v1"
+        if has_protocol_evidence != requires_protocol_evidence:
+            raise ValueError("generation method and provider protocol evidence disagree")
+        if has_protocol_evidence:
+            assert self.provider_request_json is not None
+            assert self.provider_request_sha256 is not None
+            assert self.provider_response_json is not None
+            assert self.provider_response_sha256 is not None
+            self._validate_protocol_payload(
+                self.provider_request_json,
+                self.provider_request_sha256,
+                "provider_request_json",
+            )
+            self._validate_protocol_payload(
+                self.provider_response_json,
+                self.provider_response_sha256,
+                "provider_response_json",
+            )
+        return self
 
 
 class GenerationResponse(_StrictFrozenModel):
@@ -51,6 +113,37 @@ class GenerationResponse(_StrictFrozenModel):
     provider_identity: ProviderIdentity
     effective_parameters: DecodingParameters
     raw_metadata: GenerationMetadata
+
+
+def effective_parameters_match_request(
+    effective: DecodingParameters,
+    requested: DecodingParameters,
+) -> bool:
+    """Match provider echoes using the one narrow cross-layer float tolerance."""
+
+    return (
+        isclose(
+            effective.temperature,
+            requested.temperature,
+            rel_tol=DECODING_FLOAT_RELATIVE_TOLERANCE,
+            abs_tol=DECODING_FLOAT_ABSOLUTE_TOLERANCE,
+        )
+        and isclose(
+            effective.top_p,
+            requested.top_p,
+            rel_tol=DECODING_FLOAT_RELATIVE_TOLERANCE,
+            abs_tol=DECODING_FLOAT_ABSOLUTE_TOLERANCE,
+        )
+        and effective.top_k == requested.top_k
+        and isclose(
+            effective.presence_penalty,
+            requested.presence_penalty,
+            rel_tol=DECODING_FLOAT_RELATIVE_TOLERANCE,
+            abs_tol=DECODING_FLOAT_ABSOLUTE_TOLERANCE,
+        )
+        and effective.max_tokens == requested.max_tokens
+        and effective.seed == requested.seed
+    )
 
 
 @runtime_checkable
@@ -68,9 +161,12 @@ class GenerationProvider(Protocol):
 
 
 __all__ = [
+    "DECODING_FLOAT_ABSOLUTE_TOLERANCE",
+    "DECODING_FLOAT_RELATIVE_TOLERANCE",
     "GenerationMetadata",
     "GenerationProvider",
     "GenerationRequest",
     "GenerationResponse",
     "ProviderIdentityMismatchError",
+    "effective_parameters_match_request",
 ]

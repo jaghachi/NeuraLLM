@@ -60,7 +60,7 @@ def test_canonical_serialization_round_trips_json_values(value: object) -> None:
     top_k=st.integers(min_value=0),
     presence_penalty=finite_floats,
     max_tokens=st.integers(min_value=1),
-    seed=st.integers(),
+    seed=st.integers(min_value=-(2**63), max_value=2**63 - 1),
 )
 def test_finite_decoding_parameters_remain_finite_and_round_trip(
     temperature: float,
@@ -133,8 +133,8 @@ def test_controller_action_stays_within_shared_bounds(
     prompt_sequence_id=st.text(min_size=1).filter(str.strip),
     turn_index=st.integers(min_value=0),
     policy_id=st.text(min_size=1).filter(str.strip),
-    model_seed=st.integers(),
-    controller_seed=st.integers(),
+    model_seed=st.integers(min_value=-(2**63), max_value=2**63 - 1),
+    controller_seed=st.integers(min_value=-(2**63), max_value=2**63 - 1),
     base_decoding_profile_id=st.text(min_size=1).filter(str.strip),
 )
 def test_condition_identifiers_are_deterministic(

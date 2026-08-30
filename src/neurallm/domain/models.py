@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from math import isfinite
 from types import MappingProxyType
@@ -37,6 +38,7 @@ TopP = Annotated[
 ]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveInt = Annotated[int, Field(gt=0)]
+SqliteInt64 = Annotated[int, Field(ge=-(2**63), le=2**63 - 1)]
 NonEmptyString = Annotated[
     str,
     StringConstraints(min_length=1),
@@ -99,7 +101,7 @@ class DecodingParameters(StrictFrozenModel):
     top_k: NonNegativeInt
     presence_penalty: FiniteFloat
     max_tokens: PositiveInt
-    seed: int
+    seed: SqliteInt64
 
 
 class ControllerAction(StrictFrozenModel):
@@ -154,8 +156,11 @@ class ResponseMetrics(StrictFrozenModel):
     instruction_adherence: UnitIntervalMetricValue
     response_length_tokens: CountMetricValue
     repetition_ratio: UnitIntervalMetricValue
+    repeated_3_gram_ratio: UnitIntervalMetricValue
+    repeated_4_gram_ratio: UnitIntervalMetricValue
     distinct_2: UnitIntervalMetricValue
     distinct_3: UnitIntervalMetricValue
+    late_window_repetition_ratio: UnitIntervalMetricValue
     format_validity: UnitIntervalMetricValue
     semantic_similarity: UnitIntervalMetricValue
 
@@ -187,8 +192,8 @@ class ExperimentCondition(StrictFrozenModel):
     prompt_sequence_id: NonEmptyString
     turn_index: NonNegativeInt
     policy_id: NonEmptyString
-    model_seed: int
-    controller_seed: int
+    model_seed: SqliteInt64
+    controller_seed: SqliteInt64
     provider_identity_id: Sha256Hex
     base_decoding_profile_id: NonEmptyString
 
@@ -221,8 +226,8 @@ class ProviderIdentity(StrictFrozenModel):
 class SeedSchedule(StrictFrozenModel):
     """The two independent deterministic seed streams for a run."""
 
-    model_seeds: tuple[int, ...]
-    controller_seeds: tuple[int, ...]
+    model_seeds: tuple[SqliteInt64, ...]
+    controller_seeds: tuple[SqliteInt64, ...]
 
     @model_validator(mode="after")
     def _validate_seed_streams(self) -> Self:
@@ -280,6 +285,23 @@ class ActionBounds(StrictFrozenModel):
         return action
 
 
+class DecodingBounds(StrictFrozenModel):
+    """Legal absolute decoding ranges frozen into an experiment plan."""
+
+    temperature: tuple[PositiveFiniteFloat, PositiveFiniteFloat] = (0.01, 2.0)
+    top_p: tuple[TopP, TopP] = (0.01, 1.0)
+    top_k: tuple[NonNegativeInt, NonNegativeInt] = (0, 200)
+    presence_penalty: tuple[FiniteFloat, FiniteFloat] = (-2.0, 2.0)
+
+    @model_validator(mode="after")
+    def _validate_intervals(self) -> Self:
+        for field_name in ("temperature", "top_p", "top_k", "presence_penalty"):
+            lower, upper = getattr(self, field_name)
+            if lower > upper:
+                raise ValueError(f"{field_name} lower bound exceeds upper bound")
+        return self
+
+
 class RunManifest(StrictFrozenModel):
     """Immutable provenance and scientific configuration for a run."""
 
@@ -289,10 +311,12 @@ class RunManifest(StrictFrozenModel):
     dataset_hash: Sha256Hex
     provider_config_hash: Sha256Hex
     provider_identity: ProviderIdentity
+    provider_effective_configuration_json: NonEmptyString
     policy_config_hashes: Mapping[NonEmptyString, Sha256Hex]
     metric_versions: Mapping[NonEmptyString, NonEmptyString]
     seed_schedule: SeedSchedule
     action_bounds: ActionBounds
+    decoding_bounds: DecodingBounds = DecodingBounds()
     decision_rule_version: NonEmptyString
     database_schema_version: PositiveInt
 
@@ -319,4 +343,20 @@ class RunManifest(StrictFrozenModel):
             raise ValueError(
                 "provider_config_hash must match provider_identity.provider_config_hash"
             )
+        try:
+            effective: object = json.loads(self.provider_effective_configuration_json)
+            if not isinstance(effective, dict) or not all(
+                isinstance(key, str) for key in effective
+            ):
+                raise ValueError("provider effective configuration must be a JSON object")
+            from neurallm.domain.serialization import canonical_json, canonical_sha256
+
+            if canonical_json(effective) != self.provider_effective_configuration_json:
+                raise ValueError("provider effective configuration must be canonical JSON")
+            if canonical_sha256(effective) != self.provider_config_hash:
+                raise ValueError("provider effective configuration hash does not match manifest")
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(
+                "provider effective configuration must be finite canonical JSON"
+            ) from exc
         return self
