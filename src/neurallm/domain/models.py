@@ -1,0 +1,322 @@
+"""Strict immutable value objects for the NeuraLLM experiment kernel."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from math import isfinite
+from types import MappingProxyType
+from typing import Annotated, Self
+
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    StringConstraints,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+
+def _non_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
+PositiveFiniteFloat = Annotated[
+    float,
+    Field(gt=0.0, allow_inf_nan=False),
+]
+TopP = Annotated[
+    float,
+    Field(gt=0.0, le=1.0, allow_inf_nan=False),
+]
+NonNegativeInt = Annotated[int, Field(ge=0)]
+PositiveInt = Annotated[int, Field(gt=0)]
+NonEmptyString = Annotated[
+    str,
+    StringConstraints(min_length=1),
+    AfterValidator(_non_blank),
+]
+Sha256Hex = Annotated[
+    str,
+    StringConstraints(pattern=r"^[0-9a-f]{64}$"),
+]
+GitCommitSha = Annotated[
+    str,
+    StringConstraints(pattern=r"^[0-9a-f]{40}$"),
+]
+UnitInterval = Annotated[
+    float,
+    Field(ge=0.0, le=1.0, allow_inf_nan=False),
+]
+
+
+class StrictFrozenModel(BaseModel):
+    """Shared fail-closed configuration for scientific domain records."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        validate_default=True,
+    )
+
+
+class PromptFeatures(RootModel[Mapping[NonEmptyString, FiniteFloat]]):
+    """An immutable, string-keyed collection of finite prompt features."""
+
+    model_config = ConfigDict(frozen=True, strict=True, validate_default=True)
+
+    @field_validator("root")
+    @classmethod
+    def _freeze_values(
+        cls,
+        value: Mapping[str, float],
+    ) -> Mapping[str, float]:
+        return MappingProxyType(dict(sorted(value.items())))
+
+    @field_serializer("root")
+    def _serialize_values(self, value: Mapping[str, float]) -> dict[str, float]:
+        return dict(value)
+
+    def __getitem__(self, key: str) -> float:
+        return self.root[key]
+
+    def __len__(self) -> int:
+        return len(self.root)
+
+
+class DecodingParameters(StrictFrozenModel):
+    """Complete generation settings, including the fixed generation budget."""
+
+    temperature: PositiveFiniteFloat
+    top_p: TopP
+    top_k: NonNegativeInt
+    presence_penalty: FiniteFloat
+    max_tokens: PositiveInt
+    seed: int
+
+
+class ControllerAction(StrictFrozenModel):
+    """Finite per-turn movement proposed by a control policy.
+
+    The generation budget is deliberately absent. ``max_tokens`` belongs to
+    :class:`DecodingParameters` and cannot be changed through this action. A
+    run's explicit :class:`ActionBounds` validates the action; the initial
+    pilot defaults are configuration values rather than immutable type limits.
+    """
+
+    temperature_delta: FiniteFloat
+    top_p_delta: FiniteFloat
+    top_k_delta: int
+    presence_penalty_delta: FiniteFloat
+
+
+class MetricValue[MetricScalarT: (int, float)](StrictFrozenModel):
+    """A value together with the provenance needed to interpret it."""
+
+    value: MetricScalarT | None
+    availability: bool
+    metric_version: NonEmptyString
+    input_hash: Sha256Hex
+
+    @field_validator("value")
+    @classmethod
+    def _reject_nonfinite_value(
+        cls,
+        value: MetricScalarT | None,
+    ) -> MetricScalarT | None:
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueError("metric value must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_availability(self) -> Self:
+        if self.availability != (self.value is not None):
+            raise ValueError("availability must be true exactly when value is present")
+        return self
+
+
+FloatMetricValue = MetricValue[FiniteFloat]
+UnitIntervalMetricValue = MetricValue[UnitInterval]
+CountMetricValue = MetricValue[NonNegativeInt]
+
+
+class ResponseMetrics(StrictFrozenModel):
+    """Causally available metrics computed for one completed response."""
+
+    task_score: UnitIntervalMetricValue
+    instruction_adherence: UnitIntervalMetricValue
+    response_length_tokens: CountMetricValue
+    repetition_ratio: UnitIntervalMetricValue
+    distinct_2: UnitIntervalMetricValue
+    distinct_3: UnitIntervalMetricValue
+    format_validity: UnitIntervalMetricValue
+    semantic_similarity: UnitIntervalMetricValue
+
+
+class ControllerObservation(StrictFrozenModel):
+    """Only information available when a policy selects the next action."""
+
+    turn_index: NonNegativeInt
+    prompt_family: NonEmptyString
+    current_prompt_features: PromptFeatures
+    previous_response_metrics: ResponseMetrics | None
+    has_previous_response: bool
+
+    @model_validator(mode="after")
+    def _validate_history(self) -> Self:
+        history_is_present = self.previous_response_metrics is not None
+        if self.has_previous_response != history_is_present:
+            raise ValueError("has_previous_response must exactly match previous_response_metrics")
+        if self.turn_index == 0 and history_is_present:
+            raise ValueError("turn zero requires explicit null/false previous-response history")
+        return self
+
+
+class ExperimentCondition(StrictFrozenModel):
+    """The complete logical identity of one policy/turn condition."""
+
+    experiment_id: NonEmptyString
+    dataset_version: NonEmptyString
+    prompt_sequence_id: NonEmptyString
+    turn_index: NonNegativeInt
+    policy_id: NonEmptyString
+    model_seed: int
+    controller_seed: int
+    provider_identity_id: Sha256Hex
+    base_decoding_profile_id: NonEmptyString
+
+    @property
+    def condition_id(self) -> str:
+        from neurallm.domain.identifiers import condition_id
+
+        return condition_id(self)
+
+
+class ProviderIdentity(StrictFrozenModel):
+    """Stable provider/model/build identity recorded before generation."""
+
+    provider_type: NonEmptyString
+    implementation_version: NonEmptyString
+    model_alias: NonEmptyString
+    build_id: NonEmptyString
+    provider_config_hash: Sha256Hex
+    model_path: NonEmptyString | None = None
+    model_sha256: Sha256Hex | None = None
+    chat_template_sha256: Sha256Hex | None = None
+
+    @property
+    def identity_id(self) -> str:
+        from neurallm.domain.identifiers import provider_identity_id
+
+        return provider_identity_id(self)
+
+
+class SeedSchedule(StrictFrozenModel):
+    """The two independent deterministic seed streams for a run."""
+
+    model_seeds: tuple[int, ...]
+    controller_seeds: tuple[int, ...]
+
+    @model_validator(mode="after")
+    def _validate_seed_streams(self) -> Self:
+        for name, values in (
+            ("model_seeds", self.model_seeds),
+            ("controller_seeds", self.controller_seeds),
+        ):
+            if not values:
+                raise ValueError(f"{name} must not be empty")
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must not contain duplicates")
+        return self
+
+
+class ActionBounds(StrictFrozenModel):
+    """Frozen action bounds recorded in each run manifest."""
+
+    temperature_delta: tuple[FiniteFloat, FiniteFloat] = (-0.10, 0.10)
+    top_p_delta: tuple[FiniteFloat, FiniteFloat] = (-0.05, 0.05)
+    top_k_delta: tuple[int, int] = (-10, 10)
+    presence_penalty_delta: tuple[FiniteFloat, FiniteFloat] = (-0.20, 0.20)
+
+    @model_validator(mode="after")
+    def _validate_intervals(self) -> Self:
+        for field_name in (
+            "temperature_delta",
+            "top_p_delta",
+            "top_k_delta",
+            "presence_penalty_delta",
+        ):
+            lower, upper = getattr(self, field_name)
+            if lower > upper:
+                raise ValueError(f"{field_name} lower bound exceeds upper bound")
+            if not lower <= 0 <= upper:
+                raise ValueError(f"{field_name} bounds must include zero")
+        return self
+
+    def contains(self, action: ControllerAction) -> bool:
+        """Return whether an action satisfies these frozen run bounds."""
+
+        return (
+            self.temperature_delta[0] <= action.temperature_delta <= self.temperature_delta[1]
+            and self.top_p_delta[0] <= action.top_p_delta <= self.top_p_delta[1]
+            and self.top_k_delta[0] <= action.top_k_delta <= self.top_k_delta[1]
+            and self.presence_penalty_delta[0]
+            <= action.presence_penalty_delta
+            <= self.presence_penalty_delta[1]
+        )
+
+    def require(self, action: ControllerAction) -> ControllerAction:
+        """Return a valid action or fail closed on a bound violation."""
+
+        if not self.contains(action):
+            raise ValueError("controller action exceeds the configured run bounds")
+        return action
+
+
+class RunManifest(StrictFrozenModel):
+    """Immutable provenance and scientific configuration for a run."""
+
+    source_commit: GitCommitSha
+    working_tree_clean: bool
+    experiment_config_hash: Sha256Hex
+    dataset_hash: Sha256Hex
+    provider_config_hash: Sha256Hex
+    provider_identity: ProviderIdentity
+    policy_config_hashes: Mapping[NonEmptyString, Sha256Hex]
+    metric_versions: Mapping[NonEmptyString, NonEmptyString]
+    seed_schedule: SeedSchedule
+    action_bounds: ActionBounds
+    decision_rule_version: NonEmptyString
+    database_schema_version: PositiveInt
+
+    @field_validator("policy_config_hashes", "metric_versions")
+    @classmethod
+    def _freeze_mappings(
+        cls,
+        value: Mapping[str, str],
+    ) -> Mapping[str, str]:
+        if not value:
+            raise ValueError("manifest mappings must not be empty")
+        return MappingProxyType(dict(sorted(value.items())))
+
+    @field_serializer("policy_config_hashes", "metric_versions")
+    def _serialize_mappings(
+        self,
+        value: Mapping[str, str],
+    ) -> dict[str, str]:
+        return dict(value)
+
+    @model_validator(mode="after")
+    def _validate_provider_config_hash(self) -> Self:
+        if self.provider_config_hash != self.provider_identity.provider_config_hash:
+            raise ValueError(
+                "provider_config_hash must match provider_identity.provider_config_hash"
+            )
+        return self
