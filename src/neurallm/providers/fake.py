@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from neurallm.domain.models import ProviderIdentity
-from neurallm.domain.serialization import canonical_sha256
+from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.providers.base import (
     GenerationMetadata,
     GenerationRequest,
@@ -35,7 +35,7 @@ class FakeProvider:
     __slots__ = ("_provider_identity",)
 
     def __init__(self, provider_identity: ProviderIdentity | None = None) -> None:
-        identity = provider_identity or self._default_identity()
+        identity = provider_identity or fake_provider_identity()
         if identity.provider_type != "fake":
             raise ValueError("FakeProvider requires a provider identity of type 'fake'")
         self._provider_identity = identity
@@ -44,6 +44,12 @@ class FakeProvider:
     def provider_identity(self) -> ProviderIdentity:
         """Return the immutable identity bound to this fake instance."""
         return self._provider_identity
+
+    @property
+    def effective_configuration_json(self) -> str:
+        """Return the exact canonical configuration bound by the identity hash."""
+
+        return fake_provider_effective_configuration_json()
 
     def generate(self, request: GenerationRequest) -> GenerationResponse:
         """Generate a deterministic response and echo effective settings."""
@@ -60,16 +66,28 @@ class FakeProvider:
             raw_metadata=GenerationMetadata(request_sha256=request_sha256),
         )
 
-    @staticmethod
-    def _default_identity() -> ProviderIdentity:
-        configuration = _FakeProviderConfiguration()
-        return ProviderIdentity(
-            provider_type=configuration.provider_type,
-            implementation_version=configuration.implementation_version,
-            model_alias="deterministic-fake",
-            build_id="builtin",
-            provider_config_hash=canonical_sha256(configuration),
-        )
+
+def fake_provider_effective_configuration_json() -> str:
+    """Return fake-provider configuration evidence without constructing a provider."""
+
+    return canonical_json(_FakeProviderConfiguration())
 
 
-__all__ = ["FakeProvider"]
+def fake_provider_identity() -> ProviderIdentity:
+    """Return the canonical built-in identity without constructing a provider."""
+
+    configuration = _FakeProviderConfiguration()
+    return ProviderIdentity(
+        provider_type=configuration.provider_type,
+        implementation_version=configuration.implementation_version,
+        model_alias="deterministic-fake",
+        build_id="builtin",
+        provider_config_hash=canonical_sha256(configuration),
+    )
+
+
+__all__ = [
+    "FakeProvider",
+    "fake_provider_effective_configuration_json",
+    "fake_provider_identity",
+]

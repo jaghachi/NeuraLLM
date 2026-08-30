@@ -3,9 +3,13 @@
 ## Contract status
 
 This document defines the scientific invariants that implementation and
-preregistration must preserve. It is written during Phase 1 so later code has a
-stable target. It does not claim that datasets, storage, providers, policies,
-metrics, statistics, or model-backed runs already exist.
+preregistration must preserve. The current Phase 2 implementation realizes the
+deterministic experiment kernel: strict development inputs, planning, a fixed
+kernel policy, bounded action application, deterministic response metrics,
+fake and llama.cpp provider boundaries, transactional SQLite execution/resume,
+and compact derived artifacts. It does not claim live llama.cpp validity,
+serious comparator evaluation, neural behavior, confirmatory statistics, or a
+model-backed scientific result.
 
 The experiment is valid even if the neural controller has no benefit. A run may
 support only one final decision state, and engineering completion does not
@@ -199,23 +203,23 @@ and base profile into a complete ordered set of conditions. The same canonical
 inputs must produce the same conditions and identifiers regardless of host or
 iteration order.
 
-Phase 1 provides the deterministic condition-identity foundation and a minimal
-`FakeProvider`. Identical canonical fake requests produce identical validated
-responses with zero network activity. Fake output can prove protocol,
-serialization, identity, and bounded-control behavior; it cannot prove live
-llama.cpp validity or a scientific model result.
-
-The complete planner, scheduler, dry-run identity, runner, deterministic metric
-path, and artifact publication are implemented in Phase 2. A dry run must be
-able to construct the full schedule and artifact identity without constructing
-a live provider or making HTTP calls.
+The deterministic `FakeProvider` returns identical validated responses for
+identical canonical requests with zero network activity. Phase 2 implements the
+complete planner, ordered schedule, dry-run and artifact identities, runner,
+deterministic metric path, and compact artifact publication. `validate`, `plan`,
+and `run --dry-run` construct the full schedule and identities without
+constructing any provider or making HTTP calls. Fake output can establish the
+offline provider-to-artifact engineering path; it cannot prove live llama.cpp
+validity or a scientific model result.
 
 ## Provider identity and execution
 
-The main generation path uses a strict llama.cpp provider once implemented in
-Phase 2. Configuration is explicit. There is no Ollama compatibility, hidden
-environment-variable fallback, automatic model download, provider fallback, or
-automatic retry after dispatch.
+The implemented Phase 2 llama.cpp path uses one strict completion provider with
+explicit URL, identity fields, prompt-template hash, and connect/read/write/pool
+timeouts. Construction inspects `/health` and `/props`; each generation repeats
+the inspection before one `/completion` dispatch. There is no Ollama
+compatibility, hidden environment-variable fallback, automatic model download,
+redirect following, provider fallback, or automatic retry after dispatch.
 
 The run manifest binds the exact provider identity, including llama.cpp model
 alias, model path, build, prompt template, and effective configuration obtained
@@ -243,6 +247,7 @@ policy_config_hashes
 metric_versions
 seed schedule
 action bounds
+decoding bounds
 decision-rule version
 database schema version
 ```
@@ -286,6 +291,9 @@ input_hash
 
 Unavailable optional metrics remain explicitly unavailable; they are never
 silently imputed.
+
+The exact Phase 2 tokenization, formulas, validator behavior, versions, and
+availability rules are recorded in [the metric definitions](metrics.md).
 
 The primary endpoint is:
 
@@ -360,13 +368,14 @@ A clean negative result is preserved and does not automatically open another
 tuning cycle. `INCONCLUSIVE` is reserved for valid but unresolved evidence.
 Integrity failures produce `INVALID_RUN`; they are not uncertainty.
 
-## Transaction and resume contract reserved for Phase 2
+## Transaction and resume contract
 
-Phase 1 defines but does not implement transactional run storage. Phase 2 will
-use one SQLite database as the canonical mutable store, with unique constraints
-that prevent a logical request from being committed twice.
+Phase 2 implements one SQLite database as the canonical mutable store, with
+unique constraints that prevent a logical request from being committed twice.
+Canonical reads are rehashed and integrity-checked rather than trusted as
+report text.
 
-For each logical generation, the Phase 2 transaction protocol is:
+For each logical generation, the transaction protocol is:
 
 1. Resolve the condition.
 2. Validate prerequisite history.
@@ -400,14 +409,13 @@ must not replace the canonical database or mutate the scientific decision.
 
 ## Phase gates and claim limits
 
-Phase 1 may claim only that foundation contracts, deterministic identities,
-fake-provider behavior, and zero-network tests pass their stated checks. It may
-not claim SQLite/resume correctness, live llama.cpp validity, comparator
-fairness, neural causal activity, or scientific efficacy.
-
-Phase 2 may establish the provider-to-artifact execution path but no policy
-advantage. Phase 3 may establish fair baseline and statistical behavior but no
-neural result. Phase 4 may establish neural causal activity and clean
+Phase 1 established the foundation contracts, deterministic identities,
+fake-provider behavior, and zero-network test seam. Phase 2 may establish the
+provider-to-artifact execution path, transactional resume, deterministic metric
+reconstruction, and strict provider contract behavior, but no live-provider
+claim without an explicit live run and no policy advantage under any
+circumstances. Phase 3 may establish fair baseline and statistical behavior but
+no neural result. Phase 4 may establish neural causal activity and clean
 persistent-state isolation but no model-backed benefit. Only the frozen Phase 5
 confirmatory experiment may produce the final scientific decision.
 

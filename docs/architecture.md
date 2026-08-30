@@ -2,9 +2,13 @@
 
 ## Status and purpose
 
-This document is the Phase 1 architecture contract for the NeuraLLM 2.0
-greenfield rebuild. It describes the intended system and its boundaries; it is
-not evidence that later-phase components have been implemented or validated.
+This living contract describes the NeuraLLM 2.0 architecture through the Phase
+2 experiment kernel. The current implementation includes strict configuration
+and datasets, deterministic planning, bounded action application, a fixed kernel
+policy, deterministic response metrics, fake and llama.cpp provider adapters,
+transactional SQLite execution and resume, compact exports, and the explicit
+CLI. Their existence is not evidence of live llama.cpp validity, comparator
+fairness, neural activity, or scientific efficacy.
 
 NeuraLLM asks one falsifiable question:
 
@@ -30,13 +34,13 @@ Production code is organized by domain, not by implementation phase.
 | Domain | Responsibility | Must not own |
 | --- | --- | --- |
 | `domain` | Immutable models, identifiers, canonical serialization, and hashes | Provider clients, policy logic, storage side effects |
-| `providers` | The common generation boundary, deterministic fake generation, and later the strict llama.cpp adapter | Policy selection, metrics, retries, fallback routing |
+| `providers` | The common generation boundary, deterministic fake generation, and the strict llama.cpp adapter | Policy selection, metrics, retries, fallback routing |
 | `control` | Shared policy protocol, action bounds, baselines, and the composed neural controller | Provider construction, experiment scheduling, evaluation decisions |
 | `metrics` | Deterministic validators and versioned output metrics | Controller state transitions or policy feedback routing |
-| `experiments` | Deterministic planning, matching, scheduling, execution, and later resume orchestration | Policy-specific mode dispatch or statistical claims |
+| `experiments` | Deterministic planning, matching, scheduling, execution, and resume orchestration | Policy-specific mode dispatch or statistical claims |
 | `evaluation` | Sequence-level scoring, guardrails, paired statistics, and scientific decisions | Generation or mutation of source run evidence |
-| `storage` | Later-phase transactional run persistence, manifests, and compact exports | Scientific policy or retry decisions |
-| `reporting` | Reproducible presentation of already-derived results | Recomputing or changing scientific truth |
+| `storage` | Transactional run persistence, manifests, integrity checks, and crash-safe resume | Scientific policy or retry decisions |
+| `reporting` | Compact, reproducible views derived from the canonical run store | Recomputing or changing scientific truth |
 | `cli` | Explicit composition root and command surface | Import-time clients, hidden defaults, or alternate scientific paths |
 
 Dependencies point toward typed domain contracts. The runner composes policies,
@@ -98,20 +102,23 @@ current-working-directory lookup, hidden environment-variable fallback,
 automatic model download, provider fallback, or automatic retry after a request
 has been dispatched.
 
-Phase 1 provides a minimal deterministic `FakeProvider`. It is an explicitly
-selected testing implementation, never a fallback for a failed live provider.
+The deterministic `FakeProvider` is an explicitly selected testing
+implementation, never a fallback for a failed live provider.
 For identical canonical inputs it must return identical outputs and it must make
 no network call. This gives domain, policy, identifier, and CLI contracts a
 complete zero-network test seam.
 
-The production generation adapter is a strict llama.cpp provider implemented in
-Phase 2. It will use explicit configuration, inspect `/health` and `/props`, and
-bind the exact model alias, model path, build, prompt template, and effective
-configuration into provider identity. A run binds one generation-provider
-identity; identity drift fails closed. Ollama compatibility is not part of the
-initial rebuild. An optional blinded judge, if later enabled, uses a separate
-explicit evaluation-provider identity and never becomes an implicit generation
-fallback.
+The Phase 2 generation adapter is a strict llama.cpp completion provider. Its
+explicit configuration supplies the server URL, expected model alias, model
+path, build ID, prompt-template hash, and four HTTP timeouts. Construction
+inspects `/health` and `/props`; every generation repeats that identity check
+before one `/completion` dispatch. Drift, malformed payloads, and effective
+setting mismatches fail closed. HTTP environment integration and redirects are
+disabled, and no retry, fallback, or model download exists. See
+[the provider runbook](provider-runbook.md). Contract tests do not establish
+live-provider validity. Ollama compatibility is not part of the initial
+rebuild. An optional blinded judge, if later enabled, uses a separate explicit
+evaluation-provider identity and never becomes an implicit generation fallback.
 
 ## Domain and identity contracts
 
@@ -179,11 +186,12 @@ Raw action, step-clamped action, final legal parameters, and saturation
 indicators remain distinct trace fields. Output behavior is the primary evidence;
 controller and neural trajectories are diagnostic mechanism evidence.
 
-Phase 1 establishes immutable contracts, deterministic condition identities,
-and the fake-provider seam. The complete planner, runner, metric path,
-transaction protocol, and resume behavior belong to Phase 2. A Phase 1 fake
-test must not be described as an end-to-end stored experiment or as live-provider
-validation.
+The Phase 2 kernel implements this loop for the explicitly configured
+`kernel_fixed` policy with the fake or strict llama.cpp provider. It stores the
+applied action stages, response, metrics, state, and history commitments in one
+transactional SQLite run store. Fake-provider execution establishes the offline
+provider-to-artifact engineering path; it must not be described as live-provider
+validation or policy efficacy.
 
 ## Efficacy and attribution are different experiments
 
@@ -207,12 +215,10 @@ declared persistent state differs and that no comparator-history leakage exists.
 
 ## Storage and artifact boundary
 
-SQLite storage, migrations, transactional execution, and crash-safe resumption
-are Phase 2 work. Phase 1 defines their contracts only and must not introduce an
-ad hoc JSON artifact store that would compete with the planned canonical store.
-
-The Phase 2 store will use one SQLite database as the canonical mutable run
-record. Unique constraints prevent duplicate logical requests. A request moves
+Phase 2 uses one SQLite database as the canonical mutable run record. Migrations,
+integrity verification, transactional checkpoints, history commitments, and
+crash-safe resumption are implemented without an alternate ad hoc JSON store.
+Unique constraints prevent duplicate logical requests. A request moves
 through prepared, dispatching, response-persisted, metrics-computed, and
 committed work within explicit transactions. Committed turns are never
 regenerated. A dispatched request with uncertain outcome fails closed unless the
@@ -250,8 +256,9 @@ Every confirmatory run terminates in exactly one state:
 
 A clean negative is preserved. An invalid run is not relabeled inconclusive,
 and uncertainty is not relabeled negative. Decision execution and statistical
-testing are later-phase responsibilities; Phase 1 only establishes the stable
-contracts they consume.
+testing are later-phase responsibilities. Phase 2 exports a null scientific
+decision with an engineering-only claim scope rather than simulating a later
+phase result.
 
 ## Five phase boundaries
 
@@ -278,9 +285,9 @@ automated gain or Bayesian optimization, live CL1 integration, bundled NEURON
 source trees, automatic model downloads, automatic provider fallback, silent
 generation retries, and direct controller control of generation length.
 
-Default tests perform no live HTTP or model calls. Live llama.cpp tests require
-an explicit marker, explicit configuration, and an explicit execution flag.
-Mocks can establish contract behavior but never live-provider validity. If a
-machine-local llama.cpp runtime is unavailable after all code and preflight work
-is complete, the truthful state is `READY_FOR_LIVE_SMOKE`, not a fabricated live
-result.
+Default tests perform no live HTTP or model calls. The live llama.cpp test
+requires the explicit `live` marker and a complete JSON payload; CLI model
+execution separately requires `run --execute`. Mocks can establish contract
+behavior but never live-provider validity. If a machine-local llama.cpp runtime
+is unavailable after all code and preflight work is complete, the truthful state
+is `READY_FOR_LIVE_SMOKE`, not a fabricated live result.

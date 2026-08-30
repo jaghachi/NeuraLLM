@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from neurallm.domain.models import DecodingParameters, ExperimentCondition, ProviderIdentity
-from neurallm.domain.serialization import canonical_sha256
+from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.providers.base import (
     GenerationMetadata,
     GenerationProvider,
@@ -133,3 +133,24 @@ def test_fake_provider_cannot_stamp_a_non_fake_identity() -> None:
 
     with pytest.raises(ValueError, match="type 'fake'"):
         FakeProvider(non_fake_identity)
+
+
+def test_generation_metadata_rejects_partial_or_tampered_protocol_evidence() -> None:
+    payload = {"content": "raw"}
+
+    with pytest.raises(ValidationError, match="must be complete"):
+        GenerationMetadata(
+            request_sha256="0" * 64,
+            generation_method="llama_cpp_completion_http_v1",
+            provider_request_json=canonical_json(payload),
+        )
+
+    with pytest.raises(ValidationError, match="SHA-256"):
+        GenerationMetadata(
+            request_sha256="0" * 64,
+            generation_method="llama_cpp_completion_http_v1",
+            provider_request_json=canonical_json(payload),
+            provider_request_sha256="0" * 64,
+            provider_response_json=canonical_json(payload),
+            provider_response_sha256=canonical_sha256(payload),
+        )

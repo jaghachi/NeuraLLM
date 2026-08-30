@@ -1,0 +1,12 @@
+# Copy this file and replace every identity field with values from the intended
+# llama.cpp server. NeuraLLM never downloads a model or fills these from the
+# environment.
+base_url: http://127.0.0.1:8080
+model_alias: replace-with-explicit-server-alias
+model_path: C:/models/replace-with-model.gguf
+build_id: replace-with-llama-cpp-build-id
+chat_template_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+connect_timeout_seconds: 5.0
+read_timeout_seconds: 120.0
+write_timeout_seconds: 10.0
+pool_timeout_seconds: 5.0

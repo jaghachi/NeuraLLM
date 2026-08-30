@@ -10,8 +10,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _forbid_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Fail any default test that attempts to open a network connection."""
+def _forbid_network(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Fail network access except for an explicitly selected live-marked test."""
+
+    if request.node.get_closest_marker("live") is not None:
+        yield
+        return
 
     def blocked(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError("network access is forbidden in the default test suite")
