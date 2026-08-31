@@ -21,6 +21,7 @@ def test_status_is_machine_readable_and_truthful(capsys: Any) -> None:
     assert payload == {
         "confirmatory_decision_engine_available": True,
         "confirmatory_run_completed": False,
+        "development_pilot_completed": False,
         "implementation_phase": 5,
         "live_provider_validated": False,
         "live_smoke_completed": False,
@@ -35,6 +36,8 @@ def test_status_is_machine_readable_and_truthful(capsys: Any) -> None:
         "phase_4_causal_attribution_available": True,
         "readiness": "READY_FOR_LIVE_SMOKE",
         "scientific_decision": None,
+        "static_selection_ready": False,
+        "status_evidence": [],
         "version": "2.0.0b1",
     }
 
@@ -305,6 +308,25 @@ def test_validate_plan_execute_analyze_and_report_commands(
     assert main(["report", "--run-dir", str(run_directory)]) == 0
     reported = json.loads(capsys.readouterr().out)
     assert reported["manifest_sha256"] == analyzed["manifest_sha256"]
+
+    assert main(["status", "--run-dir", str(run_directory)]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["readiness"] == "READY_FOR_LIVE_SMOKE"
+    assert status["live_provider_validated"] is False
+    assert status["status_evidence"] == [
+        {
+            "committed_turns": 3,
+            "implementation_phase": 2,
+            "manifest_sha256": analyzed["manifest_sha256"],
+            "provider_type": "fake",
+            "run_directory": str(run_directory.resolve()),
+            "run_tier": None,
+            "scientific_decision": None,
+            "scientific_result_sha256": analyzed["scientific_result_sha256"],
+            "source_kind": "run_directory",
+            "status_artifact": str((run_directory / "decision.json").resolve()),
+        }
+    ]
 
 
 def test_main_module_import_has_no_cli_side_effect(capsys: Any) -> None:

@@ -397,9 +397,13 @@ class LlamaCppProvider:
             ) = self._verify_model_artifact()
             effective_configuration = self._inspect_effective_configuration()
             provider_identity = llama_cpp_provider_identity(effective_configuration)
-        except Exception:
+        except Exception as exc:
             self._client.close()
-            raise
+            if isinstance(exc, LlamaCppProviderError):
+                raise
+            raise LlamaCppProviderError(
+                f"llama.cpp provider construction failed: {type(exc).__name__}: {exc}"
+            ) from exc
         self._effective_configuration = effective_configuration
         self._provider_identity = provider_identity
 

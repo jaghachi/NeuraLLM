@@ -10,6 +10,7 @@ import yaml
 
 from neurallm.domain.models import ProviderIdentity
 from neurallm.experiments.runner import (
+    GenerationDispatchError,
     GitProvenance,
     build_run_manifest,
     execute_plan,
@@ -263,7 +264,7 @@ def test_model_backed_provider_failure_is_durably_uncertain_and_never_retried(
     )
     database_path = tmp_path / "provider-failure.sqlite3"
 
-    with pytest.raises(RuntimeError, match="transport failed after dispatch"):
+    with pytest.raises(GenerationDispatchError, match="transport failed after dispatch"):
         execute_plan(
             prepared.plan,
             manifest,

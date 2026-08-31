@@ -31,6 +31,9 @@ from neurallm.experiments.runner import (
     read_git_provenance,
 )
 from neurallm.experiments.scientific_analysis import analyze_closed_confirmatory_run
+from neurallm.experiments.static_selection import (
+    validate_static_selection_evidence_against_dataset,
+)
 from neurallm.experiments.yaml_loader import load_yaml_mapping
 from neurallm.providers.fake import (
     FakeProvider,
@@ -134,6 +137,14 @@ def prepare_experiment(
         loaded_config.config.dataset,
     )
     development_selection_dataset = _load_development_selection_dataset(loaded_config)
+    selection_evidence = loaded_config.config.static_selection_evidence
+    if selection_evidence is not None:
+        if development_selection_dataset is None:
+            raise ValueError("static selection evidence requires its development dataset")
+        validate_static_selection_evidence_against_dataset(
+            selection_evidence,
+            development_selection_dataset.dataset,
+        )
     plan = build_plan(loaded_config, loaded_dataset)
     policy_specs = loaded_config.config.policy_specs
     policy_runtimes = dict(
@@ -279,6 +290,7 @@ def execute_prepared(
             or context.run_finalization_sha256 is None
             or spec is None
             or preregistration is None
+            or prepared.plan.static_selection_evidence_sha256 is None
             or dataset_seal is None
             or dataset_purpose is None
         ):
@@ -300,6 +312,7 @@ def execute_prepared(
                 scientific_result_sha256=run_finalization.scientific_result_sha256,
                 scientific_identity_sha256=prepared.plan.scientific_identity_sha256,
                 preregistration_sha256=preregistration.seal_sha256,
+                static_selection_evidence_sha256=(prepared.plan.static_selection_evidence_sha256),
                 confirmatory_analysis_contract_sha256=(context.analysis_contract_sha256),
                 confirmatory_analysis_spec=spec,
                 confirmatory_analysis_spec_sha256=canonical_sha256(spec),

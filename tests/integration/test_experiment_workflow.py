@@ -485,6 +485,7 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
     output_directory = tmp_path / "confirmatory-run"
     spec = object()
     preregistration_sha256 = "1" * 64
+    static_selection_evidence_sha256 = "e" * 64
     dataset_seal_sha256 = "2" * 64
     scientific_identity_sha256 = "3" * 64
     dataset_sha256 = "4" * 64
@@ -512,6 +513,7 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
             protocol=SimpleNamespace(run_tier=RunTier.CONFIRMATORY),
             confirmatory_analysis=spec,
             preregistration=SimpleNamespace(seal_sha256=preregistration_sha256),
+            static_selection_evidence_sha256=static_selection_evidence_sha256,
             dataset_seal=SimpleNamespace(seal_sha256=dataset_seal_sha256),
             dataset_purpose=DatasetPurpose.EVALUATION,
             scientific_identity_sha256=scientific_identity_sha256,
@@ -634,6 +636,7 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
         "scientific_result_sha256": run_finalization.scientific_result_sha256,
         "scientific_identity_sha256": scientific_identity_sha256,
         "preregistration_sha256": preregistration_sha256,
+        "static_selection_evidence_sha256": static_selection_evidence_sha256,
         "confirmatory_analysis_contract_sha256": context.analysis_contract_sha256,
         "confirmatory_analysis_spec": spec,
         "confirmatory_analysis_spec_sha256": "c" * 64,

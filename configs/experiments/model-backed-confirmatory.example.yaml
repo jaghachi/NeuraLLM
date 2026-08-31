@@ -1,6 +1,7 @@
 # PREREGISTRATION TEMPLATE ONLY: intentionally non-executable as checked in.
-# Replace the complete llama.cpp placeholder below with exact machine-local
-# preflight evidence before publishing a seal. This file intentionally has no
+# Replace the llama.cpp placeholders with exact machine-local preflight evidence
+# and the static-selection placeholders with the published development-pilot
+# artifact identity before publishing a seal. This file intentionally has no
 # `preregistration` field: it is input to `neurallm preregister`.
 schema_version: 1
 experiment_id: model-backed-confirmatory
@@ -20,7 +21,7 @@ provider:
   # These values deliberately fail identity validation until replaced together
   # with the exact output of a machine-local llama.cpp preflight.
   kind: llama_cpp
-  config_path: ../providers/llama_cpp.confirmatory.local.yaml
+  config_path: ../providers/llama_cpp.local.yaml
   expected_identity:
     provider_type: llama_cpp
     implementation_version: llama-cpp-completion-http-v1
@@ -312,59 +313,9 @@ development_selection_input:
     version: phase3-baseline-development-v1
     purpose: development
     expected_dataset_sha256: a6c41a046cb84bc9a806866a7393196784eb769118f74cbe4d44d0f3e247df97
-static_selection_record:
-  schema_version: 1
-  implementation_version: development-static-selection-v1
-  dataset_purpose: development
-  development_dataset_sha256: a6c41a046cb84bc9a806866a7393196784eb769118f74cbe4d44d0f3e247df97
-  development_unit_keys:
-    - {prompt_sequence_id: dev-constrained-format, model_seed: 1101}
-    - {prompt_sequence_id: dev-constrained-format, model_seed: 1102}
-    - {prompt_sequence_id: dev-creative-constrained, model_seed: 1101}
-    - {prompt_sequence_id: dev-creative-constrained, model_seed: 1102}
-    - {prompt_sequence_id: dev-creative-revision, model_seed: 1101}
-    - {prompt_sequence_id: dev-creative-revision, model_seed: 1102}
-    - {prompt_sequence_id: dev-longform-exposition, model_seed: 1101}
-    - {prompt_sequence_id: dev-longform-exposition, model_seed: 1102}
-    - {prompt_sequence_id: dev-longform-recovery, model_seed: 1101}
-    - {prompt_sequence_id: dev-longform-recovery, model_seed: 1102}
-    - {prompt_sequence_id: dev-mixed-transition, model_seed: 1101}
-    - {prompt_sequence_id: dev-mixed-transition, model_seed: 1102}
-  selection_metric: mean-sequence-task-score-v1
-  tie_break_rule: highest-mean-then-lexical-profile-id-v1
-  candidate_results:
-    - profile:
-        profile_id: static-balanced-v1
-        temperature: 0.7
-        top_p: 0.9
-        top_k: 40
-        presence_penalty: 0.0
-        max_tokens: 192
-      unit_scores: [0.82, 0.84, 0.79, 0.81, 0.86, 0.85, 0.80, 0.83, 0.78, 0.82, 0.84, 0.81]
-    - profile:
-        profile_id: static-conservative-v1
-        temperature: 0.55
-        top_p: 0.85
-        top_k: 30
-        presence_penalty: 0.0
-        max_tokens: 192
-      unit_scores: [0.80, 0.80, 0.78, 0.79, 0.81, 0.82, 0.79, 0.80, 0.77, 0.80, 0.81, 0.79]
-    - profile:
-        profile_id: static-exploratory-v1
-        temperature: 0.85
-        top_p: 0.95
-        top_k: 60
-        presence_penalty: 0.1
-        max_tokens: 192
-      unit_scores: [0.78, 0.82, 0.77, 0.79, 0.84, 0.83, 0.76, 0.81, 0.75, 0.79, 0.82, 0.78]
-  winning_profile:
-    profile_id: static-balanced-v1
-    temperature: 0.7
-    top_p: 0.9
-    top_k: 40
-    presence_penalty: 0.0
-    max_tokens: 192
-  selection_result_sha256: 19be248a50cf6504011168d1e79e3e3cd24d1027017a6cbec443b9019a0bf301
+static_selection_evidence:
+  path: ../../evidence/development/model-backed-static-selection.json
+  expected_sha256: 0000000000000000000000000000000000000000000000000000000000000000
 model_seeds:
   - 6101
   - 6102

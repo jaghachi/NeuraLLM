@@ -180,6 +180,7 @@ def _run_manifest(
     if preregistration_sha256 is None and run_tier == "confirmatory":
         preregistration_sha256 = canonical_sha256("preregistration")
     scientific_identity_sha256 = canonical_sha256("confirmatory-plan")
+    static_selection_evidence_sha256 = canonical_sha256("static-selection-evidence")
     dataset_sha256 = canonical_sha256("confirmatory-dataset")
     dataset_seal_sha256 = canonical_sha256("confirmatory-dataset-seal")
     turn_inputs = _turn_inputs(
@@ -197,6 +198,7 @@ def _run_manifest(
         confirmatory_contract_sha256 = confirmatory_analysis_contract_sha256(
             scientific_identity_sha256=scientific_identity_sha256,
             preregistration_sha256=preregistration_sha256,
+            static_selection_evidence_sha256=static_selection_evidence_sha256,
             confirmatory_analysis_spec=spec,
             confirmatory_analysis_spec_sha256=canonical_sha256(spec),
             evaluation_spec=_evaluation_spec(),
@@ -234,6 +236,12 @@ def _run_manifest(
         run_tier=run_tier,
         scientific_identity_sha256=scientific_identity_sha256,
         preregistration_sha256=preregistration_sha256,
+        static_selection_evidence_sha256=(
+            static_selection_evidence_sha256 if run_tier == "confirmatory" else None
+        ),
+        candidate_grid_sha256=(
+            canonical_sha256("candidate-grid") if run_tier == "development_pilot" else None
+        ),
         confirmatory_analysis_contract_sha256=confirmatory_contract_sha256,
     )
 
@@ -659,11 +667,46 @@ def _complete_llama_requests(
             )
             store.prepare_turn(request, history, input_evidence)
             store.begin_dispatch(request.condition_id)
+            response_text = "one two three four five six seven eight"
+            parameters = request.decoding_parameters
+            provider_request = {
+                "prompt": request.prompt,
+                "model": identity.model_alias,
+                "temperature": parameters.temperature,
+                "top_p": parameters.top_p,
+                "top_k": parameters.top_k,
+                "presence_penalty": parameters.presence_penalty,
+                "n_predict": parameters.max_tokens,
+                "seed": parameters.seed,
+                "stream": False,
+                "cache_prompt": False,
+            }
+            provider_response = {
+                "content": response_text,
+                "stop": True,
+                "model": identity.model_alias,
+                "generation_settings": {
+                    "temperature": parameters.temperature,
+                    "top_p": parameters.top_p,
+                    "top_k": parameters.top_k,
+                    "presence_penalty": parameters.presence_penalty,
+                    "n_predict": parameters.max_tokens,
+                    "max_tokens": parameters.max_tokens,
+                    "seed": parameters.seed,
+                },
+            }
             response = GenerationResponse(
-                text="one two three four five six seven eight",
+                text=response_text,
                 provider_identity=identity,
                 effective_parameters=request.decoding_parameters,
-                raw_metadata=GenerationMetadata(request_sha256=canonical_sha256(request)),
+                raw_metadata=GenerationMetadata(
+                    request_sha256=canonical_sha256(request),
+                    generation_method="llama_cpp_completion_http_v1",
+                    provider_request_json=canonical_json(provider_request),
+                    provider_request_sha256=canonical_sha256(provider_request),
+                    provider_response_json=canonical_json(provider_response),
+                    provider_response_sha256=canonical_sha256(provider_response),
+                ),
             )
             store.persist_response(request.condition_id, response)
             metric_prompt_family = prompt_family or "family-a"
@@ -721,6 +764,7 @@ def _scientific_manifest(
     spec = _confirmatory_spec()
     assert run_manifest.scientific_identity_sha256 is not None
     assert run_manifest.preregistration_sha256 is not None
+    assert run_manifest.static_selection_evidence_sha256 is not None
     assert run_manifest.confirmatory_analysis_contract_sha256 is not None
     return ScientificAnalysisManifest(
         run_manifest_sha256=canonical_sha256(run_manifest),
@@ -728,6 +772,7 @@ def _scientific_manifest(
         scientific_result_sha256=run_finalization.scientific_result_sha256,
         scientific_identity_sha256=run_manifest.scientific_identity_sha256,
         preregistration_sha256=run_manifest.preregistration_sha256,
+        static_selection_evidence_sha256=run_manifest.static_selection_evidence_sha256,
         confirmatory_analysis_contract_sha256=(run_manifest.confirmatory_analysis_contract_sha256),
         confirmatory_analysis_spec=spec,
         confirmatory_analysis_spec_sha256=canonical_sha256(spec),
@@ -762,6 +807,10 @@ def test_scientific_analysis_is_atomic_typed_idempotent_and_reopenable(
         stored = store.get_scientific_analysis()
         assert stored is not None
         assert stored.manifest == manifest
+        assert (
+            stored.manifest.static_selection_evidence_sha256
+            == run_manifest.static_selection_evidence_sha256
+        )
         assert stored.result == result
         assert stored.efficacy_comparisons == result.efficacy_comparisons
         assert stored.attribution == result.attribution
@@ -791,7 +840,13 @@ def test_scientific_analysis_is_atomic_typed_idempotent_and_reopenable(
 
     with SQLiteRunStore(database) as reopened:
         assert reopened.get_analysis() is None
-        assert reopened.get_scientific_analysis() == stored
+        reopened_stored = reopened.get_scientific_analysis()
+        assert reopened_stored == stored
+        assert reopened_stored is not None
+        assert (
+            reopened_stored.manifest.static_selection_evidence_sha256
+            == run_manifest.static_selection_evidence_sha256
+        )
         reopened.verify_integrity()
 
 
@@ -1224,6 +1279,7 @@ def test_scientific_analysis_rejects_foreign_bindings_before_any_write(
             {"scientific_result_sha256": "3" * 64},
             {"scientific_identity_sha256": "4" * 64},
             {"preregistration_sha256": "5" * 64},
+            {"static_selection_evidence_sha256": "c" * 64},
             {"confirmatory_analysis_contract_sha256": "8" * 64},
             {"confirmatory_analysis_spec_sha256": "9" * 64},
             {
@@ -1528,6 +1584,9 @@ def test_scientific_analysis_requires_finalized_confirmatory_llama_run(
         promoted_pilot_manifest = pilot_manifest.model_copy(
             update={
                 "preregistration_sha256": canonical_sha256("foreign-seal"),
+                "static_selection_evidence_sha256": canonical_sha256(
+                    "foreign-static-selection-evidence"
+                ),
                 "confirmatory_analysis_contract_sha256": canonical_sha256("foreign-contract"),
             }
         )

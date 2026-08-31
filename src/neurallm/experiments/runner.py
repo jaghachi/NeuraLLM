@@ -63,6 +63,10 @@ from neurallm.storage import (
 )
 
 
+class GenerationDispatchError(RuntimeError):
+    """A provider failed after the durable dispatch boundary was crossed."""
+
+
 class AppliedPolicyTrace(PolicyTrace):
     """Policy decision plus every auditable action-clamping stage."""
 
@@ -384,6 +388,8 @@ def build_run_manifest(
         preregistration_sha256=(
             None if plan.preregistration is None else plan.preregistration.seal_sha256
         ),
+        static_selection_evidence_sha256=plan.static_selection_evidence_sha256,
+        candidate_grid_sha256=plan.candidate_grid_sha256,
         confirmatory_analysis_contract_sha256=(confirmatory_analysis_contract_sha256),
     )
 
@@ -707,7 +713,9 @@ def execute_plan(
                         condition_id,
                         f"{type(exc).__name__}: {exc}",
                     )
-                    raise
+                    raise GenerationDispatchError(
+                        f"provider dispatch failed after durable begin: {type(exc).__name__}: {exc}"
+                    ) from exc
                 stored = store.persist_response(condition_id, response)
                 if checkpoint_hook is not None:
                     checkpoint_hook(TurnState.RESPONSE_PERSISTED, turn)
@@ -808,6 +816,7 @@ __all__ = [
     "CheckpointHook",
     "DetailedAppliedPolicyTrace",
     "ExecutionSummary",
+    "GenerationDispatchError",
     "GitProvenance",
     "PolicyRuntime",
     "build_fixed_policy_runtimes",

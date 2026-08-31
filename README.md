@@ -198,14 +198,25 @@ SHA-256 of the complete model artifact at an absolute client-readable path:
 
 ```powershell
 Copy-Item configs/providers/llama_cpp.example.yaml configs/providers/llama_cpp.local.yaml
-Copy-Item configs/experiments/model-backed-confirmatory.example.yaml configs/experiments/model-backed-confirmatory.local.yaml
+Copy-Item configs/experiments/model-backed-confirmatory.example.yaml configs/experiments/model-backed-confirmatory.preregistration.local.yaml
 Copy-Item configs/experiments/model-backed-live-smoke.example.yaml configs/experiments/model-backed-live-smoke.local.yaml
 ```
 
 ```powershell
 neurallm status
+neurallm status --run-dir runs/live-smoke --run-dir runs/development-pilot
+neurallm status --status-artifact runs/live-smoke/decision.json
+neurallm status `
+  --run-dir runs/development-pilot-balanced `
+  --run-dir runs/development-pilot-conservative `
+  --run-dir runs/development-pilot-exploratory `
+  --candidate-grid configs/experiments/model-backed-development-pilot-candidate-grid.json
 neurallm preflight --provider-config configs/providers/llama_cpp.local.yaml
-neurallm preregister --config configs/experiments/model-backed-confirmatory.local.yaml --output preregistration.json
+neurallm preregister `
+  --config configs/experiments/model-backed-confirmatory.preregistration.local.yaml `
+  --output configs/preregistration/model-backed-confirmatory.seal.json `
+  --sealed-config-output configs/experiments/model-backed-confirmatory.local.yaml
+neurallm run --config configs/experiments/model-backed-confirmatory.local.yaml --dry-run
 neurallm validate --config configs/experiments/phase3-baseline-evaluation.yaml
 neurallm plan --config configs/experiments/phase3-baseline-evaluation.yaml
 neurallm run --config configs/experiments/phase3-baseline-evaluation.yaml --dry-run
@@ -213,18 +224,45 @@ neurallm run --config configs/experiments/phase3-synthetic-evaluator.yaml --exec
 neurallm run --config configs/experiments/phase4-neural-causal-smoke.yaml --dry-run
 neurallm run --config configs/experiments/model-backed-engineering-smoke.yaml --execute
 neurallm run --config configs/experiments/model-backed-live-smoke.local.yaml --execute --allow-live-provider
+neurallm run --config configs/experiments/model-backed-confirmatory.local.yaml --execute --allow-live-provider
 neurallm analyze --run-dir runs/phase3-synthetic-evaluator-validation
 neurallm report --run-dir runs/phase3-synthetic-evaluator-validation
 ```
 
+With no evidence argument, `status` reports the truthful repository-only
+`READY_FOR_LIVE_SMOKE` state. It never searches the current directory or an
+environment variable for run evidence. Each `--run-dir` is explicit and the
+option may be repeated to aggregate smoke, pilot, and confirmatory progression.
+The mutually exclusive `--status-artifact` form is also repeatable, but accepts
+only an adjacent `decision.json`. Both forms verify and compact `run.sqlite3`,
+regenerate the closed-run views, validate the decision structure and hashes,
+and report the exact contributing paths in `status_evidence`; a supplied
+decision artifact must exactly match the regenerated canonical payload.
+Identical resolved inputs are deduplicated, while distinct multiple
+confirmatory runs are rejected even when their decisions agree. Only verified
+llama.cpp evidence advances the live flags. One or two verified pilots report
+`READY_FOR_ADDITIONAL_DEVELOPMENT_PILOT`; duplicate references to a run do not
+count again. Once the explicit pilot count could cover the declared grid,
+`--candidate-grid` is required. Status loads that canonical JSON explicitly,
+then re-derives static-selection evidence from the exact deduplicated run
+directories (or the parents of explicit status artifacts). It reports
+`READY_FOR_STATIC_SELECTION` only when the complete grid and all cross-run
+compatibility and integrity checks pass. Supplying the grid with only one or
+two pilots validates it but does not advance readiness. Status does not publish
+the selection artifact, freeze calibration, or preregister the confirmatory run.
+
 `preflight` deliberately hashes the local model artifact and performs only
 llama.cpp identity inspection through `/health` and `/props`; it never requests
-a completion. `preregister`,
-`validate`, `plan`, and `run --dry-run` validate or freeze declared inputs
-without constructing a generation provider. They cover the complete schedule,
-development-selection evidence, dataset identity, seal when required, policy
-specifications, evaluator identity, and applicable confirmatory-analysis
-contract.
+a completion. `preregister` publishes the canonical seal and, when
+`--sealed-config-output` is supplied, writes a separate executable YAML with
+that exact seal embedded. The draft and executable local YAML files are ignored;
+the seal and the externally referenced development-pilot selection evidence are
+publication artifacts and must be reviewed and committed before confirmatory
+execution. `preregister`, `validate`, `plan`, and `run --dry-run` validate or
+freeze declared inputs without constructing a generation provider. They cover
+the complete schedule, both dataset identities, development-selection request
+and turn-input bindings, seal when required, policy specifications, evaluator
+identity, and applicable confirmatory-analysis contract.
 
 `run --execute` is the explicit provider boundary. A llama.cpp run additionally
 requires `--allow-live-provider`; omission fails before provider construction or
@@ -244,9 +282,10 @@ the llama.cpp examples retain deliberate machine-local placeholders.
 
 `analyze` and `report` re-verify the canonical store and reproduce the derived
 views. After argparse accepts a command, successful application output is
-canonical JSON on stdout; runtime or validation failures are canonical JSON on
-stderr with exit code 2. `--help`, `--version`, and argparse usage errors retain
-argparse's plain-text interface.
+canonical JSON on stdout; expected project, I/O, and validation failures are
+canonical JSON on stderr with exit code 2. Unexpected programming errors are
+not swallowed by that boundary and retain their traceback. `--help`,
+`--version`, and argparse usage errors retain argparse's plain-text interface.
 
 Every closed run contains exactly:
 

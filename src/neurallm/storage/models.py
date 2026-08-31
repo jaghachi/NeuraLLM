@@ -130,6 +130,11 @@ class RunFinalization(BaseModel):
         exclude_if=lambda value: value is None,
     )
 
+    @field_validator("expected_condition_ids", mode="before")
+    @classmethod
+    def _accept_serialized_condition_ids(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
     @model_validator(mode="after")
     def validate_schedule_identity(self) -> Self:
         """Require one nonempty, sorted, duplicate-free schedule identity."""
@@ -272,6 +277,7 @@ class ScientificAnalysisManifest(BaseModel):
     scientific_result_sha256: Sha256Hex
     scientific_identity_sha256: Sha256Hex
     preregistration_sha256: Sha256Hex
+    static_selection_evidence_sha256: Sha256Hex
     confirmatory_analysis_contract_sha256: Sha256Hex
     confirmatory_analysis_spec: ConfirmatoryAnalysisSpec
     confirmatory_analysis_spec_sha256: Sha256Hex

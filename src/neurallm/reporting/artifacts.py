@@ -898,6 +898,7 @@ def _phase5_decision_payload(
         "validated_negative_multiplicity_sha256": (result.validated_negative_multiplicity_sha256),
         "scientific_identity_sha256": manifest.scientific_identity_sha256,
         "preregistration_sha256": manifest.preregistration_sha256,
+        "static_selection_evidence_sha256": (manifest.static_selection_evidence_sha256),
         "evaluation_input_sha256": result.input_sha256,
         "evaluation_result_sha256": result.result_sha256,
         "decision_input_sha256": result.decision.decision_input_sha256,
@@ -1165,6 +1166,8 @@ def _phase5_confirmatory_report_text(
         f"- Evaluation result SHA-256: `{result.result_sha256}`\n"
         f"- Scientific identity SHA-256: `{manifest.scientific_identity_sha256}`\n"
         f"- Preregistration SHA-256: `{manifest.preregistration_sha256}`\n"
+        "- Static-selection evidence SHA-256: "
+        f"`{manifest.static_selection_evidence_sha256}`\n"
         "- Confirmatory analysis contract SHA-256: "
         f"`{manifest.confirmatory_analysis_contract_sha256}`\n"
         f"- Provider identity: `{manifest.provider_identity.identity_id}`\n"

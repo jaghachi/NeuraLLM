@@ -1,7 +1,15 @@
-# Offline development pilot. The fake provider validates the exact five-arm
-# schedule and accounting without creating model-backed scientific evidence.
+# LIVE DEVELOPMENT-PILOT CANDIDATE TEMPLATE: intentionally non-executable as
+# checked in. Copy once per declared static profile. Replace every PASTE value
+# with one exact llama.cpp preflight identity, give each copy a unique
+# experiment_id/artifact_root/profile ID, and change only the declared base
+# profile values with the exact values in the checked-in candidate grid. No
+# sampling value is operator-chosen. `max_tokens` is fixed at 192 across the
+# entire grid and is never a selectable control dimension.
+#   static-balanced-v1:     0.7,  0.9,  40, 0.0, 192
+#   static-conservative-v1: 0.55, 0.85, 30, 0.0, 192
+#   static-exploratory-v1:  0.85, 0.95, 60, 0.1, 192
 schema_version: 1
-experiment_id: model-backed-development-pilot-offline
+experiment_id: model-backed-development-pilot-PASTE_STATIC_PROFILE_ID
 dataset:
   path: ../../datasets/development/phase3-baseline-development-v1.yaml
   version: phase3-baseline-development-v1
@@ -11,17 +19,18 @@ candidate_grid:
   path: model-backed-development-pilot-candidate-grid.json
   expected_sha256: 39fcead158f98e9f359f6d1aef13660046024edc37bf70e95b26a1ed904ac49a
 provider:
-  kind: fake
+  kind: llama_cpp
+  config_path: ../providers/llama_cpp.local.yaml
   expected_identity:
-    provider_type: fake
-    implementation_version: 2.0.0
-    model_alias: deterministic-fake
-    build_id: builtin
-    provider_config_hash: 62dd2cef1f89c1ba05ecef467ecd094c6ed2107f30a303ab81e2a7eef2dcf8f7
-    model_path: null
-    model_sha256: null
-    chat_template_sha256: null
-  expected_effective_configuration_json: '{"generation_method":"fake_provider_visible_sha256_v2","implementation_version":"2.0.0","provider_type":"fake"}'
+    provider_type: llama_cpp
+    implementation_version: llama-cpp-completion-http-v1
+    model_alias: PASTE_PREFLIGHT_MODEL_ALIAS
+    build_id: PASTE_PREFLIGHT_BUILD_ID
+    provider_config_hash: 0000000000000000000000000000000000000000000000000000000000000000
+    model_path: C:/PASTE/PREFLIGHT/MODEL/PATH/model.gguf
+    model_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    chat_template_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+  expected_effective_configuration_json: '{"PASTE":"the exact canonical expected_effective_configuration_json from preflight"}'
 policy_specs:
   - kind: best_static
   - kind: heuristic_adaptive
@@ -64,7 +73,7 @@ model_seeds:
   - 4102
 controller_seeds:
   - 5101
-base_decoding_profile_id: static-balanced-v1
+base_decoding_profile_id: PASTE_STATIC_PROFILE_ID
 base_decoding_profile:
   temperature: 0.7
   top_p: 0.9
@@ -95,4 +104,4 @@ metric_versions:
   task_score: validator-v1
 decision_rule_version: development-pilot-no-scientific-decision-v1
 database_schema_version: 2
-artifact_root: ../../runs/model-backed-development-pilot-offline
+artifact_root: ../../runs/model-backed-development-pilot-PASTE_STATIC_PROFILE_ID

@@ -155,6 +155,7 @@ def _require_confirmatory_plan(plan: ExperimentPlan) -> ConfirmatoryAnalysisSpec
         or plan.static_selection_record is None
         or plan.static_selection_result_sha256
         != plan.static_selection_record.selection_result_sha256
+        or plan.static_selection_evidence_sha256 is None
     ):
         raise ValueError("confirmatory analysis plan lacks its frozen analysis evidence")
     if (
@@ -183,6 +184,7 @@ def confirmatory_analysis_contract_sha256(
     *,
     scientific_identity_sha256: str,
     preregistration_sha256: str,
+    static_selection_evidence_sha256: str,
     confirmatory_analysis_spec: ConfirmatoryAnalysisSpec,
     confirmatory_analysis_spec_sha256: str,
     evaluation_spec: EvaluationSpec,
@@ -220,6 +222,7 @@ def confirmatory_analysis_contract_sha256(
             "implementation_version": "confirmatory-analysis-contract-v2",
             "scientific_identity_sha256": scientific_identity_sha256,
             "preregistration_sha256": preregistration_sha256,
+            "static_selection_evidence_sha256": static_selection_evidence_sha256,
             "confirmatory_analysis_spec": confirmatory_analysis_spec,
             "confirmatory_analysis_spec_sha256": confirmatory_analysis_spec_sha256,
             "evaluation_spec": evaluation_spec,
@@ -243,10 +246,12 @@ def build_confirmatory_analysis_contract_sha256(plan: ExperimentPlan) -> str:
     assert plan.dataset_purpose is not None
     assert plan.evaluation is not None
     assert plan.evaluation_spec_sha256 is not None
+    assert plan.static_selection_evidence_sha256 is not None
     prompt_family_by_sequence = _prompt_family_by_sequence(plan)
     return confirmatory_analysis_contract_sha256(
         scientific_identity_sha256=plan.scientific_identity_sha256,
         preregistration_sha256=plan.preregistration.seal_sha256,
+        static_selection_evidence_sha256=plan.static_selection_evidence_sha256,
         confirmatory_analysis_spec=spec,
         confirmatory_analysis_spec_sha256=canonical_sha256(spec),
         evaluation_spec=plan.evaluation,
@@ -288,6 +293,7 @@ def _validate_manifest(plan: ExperimentPlan, manifest: RunManifest) -> None:
         or manifest.run_tier != RunTier.CONFIRMATORY.value
         or manifest.scientific_identity_sha256 != plan.scientific_identity_sha256
         or manifest.preregistration_sha256 != plan.preregistration.seal_sha256
+        or manifest.static_selection_evidence_sha256 != plan.static_selection_evidence_sha256
         or manifest.turn_input_evidence_sha256
         != build_confirmatory_turn_input_evidence_sha256(plan)
         or manifest.confirmatory_analysis_contract_sha256

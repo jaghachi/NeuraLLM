@@ -125,6 +125,16 @@ class ExperimentPlan(_StrictFrozenModel):
         pattern=r"^[0-9a-f]{64}$",
         exclude_if=lambda value: value is None,
     )
+    static_selection_evidence_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+    candidate_grid_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
     matched_units: tuple[MatchedCoverageExpectation, ...] = ()
     turns: tuple[PlannedTurn, ...]
 
@@ -248,11 +258,19 @@ class ExperimentPlan(_StrictFrozenModel):
                     or self.evaluation_spec_sha256 is not None
                     or self.static_selection_record is not None
                     or self.static_selection_result_sha256 is not None
+                    or self.static_selection_evidence_sha256 is not None
                     or self.matched_units
                 ):
                     raise ValueError("smoke and pilot plans cannot contain confirmatory evidence")
+                if tier is RunTier.ENGINEERING_SMOKE:
+                    if self.candidate_grid_sha256 is not None:
+                        raise ValueError("engineering-smoke plan cannot carry a candidate grid")
+                elif self.candidate_grid_sha256 is None:
+                    raise ValueError("development-pilot plan requires its candidate-grid identity")
                 return self
 
+            if self.candidate_grid_sha256 is not None:
+                raise ValueError("confirmatory plan cannot carry a candidate grid")
             if self.dataset_purpose is not DatasetPurpose.EVALUATION or self.dataset_seal is None:
                 raise ValueError("confirmatory plan requires a sealed evaluation dataset")
             if self.confirmatory_analysis is None:
@@ -263,6 +281,8 @@ class ExperimentPlan(_StrictFrozenModel):
                 raise ValueError("confirmatory plan requires its exact EvaluationSpec identity")
             if self.static_selection_record is None or self.static_selection_result_sha256 is None:
                 raise ValueError("confirmatory plan requires frozen static-selection evidence")
+            if self.static_selection_evidence_sha256 is None:
+                raise ValueError("confirmatory plan requires model-backed selection provenance")
             if (
                 self.static_selection_result_sha256
                 != self.static_selection_record.selection_result_sha256
@@ -309,11 +329,14 @@ class ExperimentPlan(_StrictFrozenModel):
             raise ValueError("preregistration requires a model-backed protocol")
         if self.confirmatory_analysis is not None:
             raise ValueError("confirmatory analysis rules require a model-backed protocol")
+        if self.candidate_grid_sha256 is not None:
+            raise ValueError("candidate-grid identity requires a development-pilot protocol")
         if self.evaluation is None:
             if (
                 self.evaluation_spec_sha256 is not None
                 or self.static_selection_record is not None
                 or self.static_selection_result_sha256 is not None
+                or self.static_selection_evidence_sha256 is not None
                 or self.matched_units
             ):
                 raise ValueError("Phase 2 plan cannot contain Phase 3 evaluation evidence")
@@ -363,6 +386,8 @@ class ExperimentPlan(_StrictFrozenModel):
             raise ValueError("evaluation_spec_sha256 does not match EvaluationSpec")
         if self.static_selection_record is None or self.static_selection_result_sha256 is None:
             raise ValueError("Phase 3 plan requires frozen static-selection evidence")
+        if self.static_selection_evidence_sha256 is not None:
+            raise ValueError("Phase 3 legacy plans cannot claim model-backed selection provenance")
         if (
             self.static_selection_result_sha256
             != self.static_selection_record.selection_result_sha256
@@ -567,12 +592,14 @@ def build_plan(
         confirmatory_analysis=config.confirmatory_analysis,
         evaluation=config.evaluation,
         evaluation_spec_sha256=config.evaluation_spec_sha256,
-        static_selection_record=config.static_selection_record,
+        static_selection_record=config.resolved_static_selection_record,
         static_selection_result_sha256=(
             None
-            if config.static_selection_record is None
-            else config.static_selection_record.selection_result_sha256
+            if config.resolved_static_selection_record is None
+            else config.resolved_static_selection_record.selection_result_sha256
         ),
+        static_selection_evidence_sha256=config.static_selection_evidence_sha256,
+        candidate_grid_sha256=config.candidate_grid_sha256,
         matched_units=matched_units,
         turns=tuple(turns),
     )

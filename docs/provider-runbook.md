@@ -144,6 +144,63 @@ operator-controlled server whose path-to-loaded-artifact relationship is trusted
 A remote-only or container-internal path that the client cannot read fails
 closed; there is no remote attestation or download fallback.
 
+## Provider-free confirmatory handoff
+
+The checked-in confirmatory file is an unsealed template, not an executable
+claim configuration. Copy it to one ignored draft beside the final ignored
+configuration. Both experiment files reference the same provider filename used
+by preflight:
+
+```powershell
+Copy-Item configs/providers/llama_cpp.example.yaml configs/providers/llama_cpp.local.yaml
+Copy-Item configs/experiments/model-backed-confirmatory.example.yaml configs/experiments/model-backed-confirmatory.preregistration.local.yaml
+```
+
+Populate the provider fields in the draft from the exact preflight output and
+replace its `static_selection_evidence` placeholders with the path and hash of
+the published, finalized development-pilot selection artifact. Then publish the
+seal and materialize a separate executable configuration in one provider-free
+operation:
+
+```powershell
+neurallm preregister `
+  --config configs/experiments/model-backed-confirmatory.preregistration.local.yaml `
+  --output configs/preregistration/model-backed-confirmatory.seal.json `
+  --sealed-config-output configs/experiments/model-backed-confirmatory.local.yaml
+```
+
+The command does not construct a provider or request network access. It validates
+both declared dataset identities and reconstructs every pilot selection request
+and turn input from the development prompts before validating the complete
+candidate plan. It writes canonical JSON for the public seal, copies the source
+reference mapping to the executable YAML, embeds the exact seal, and reloads and
+rebuilds that YAML through the normal reference-aware loader. The sealed output
+must be beside the draft so its relative dataset, provider, selection-evidence,
+and artifact paths keep the same meaning. Repeating the command with
+byte-identical outputs is safe; a differing existing seal or sealed
+configuration is never overwritten.
+
+The two `*.local.yaml` files are ignored. The seal and the selection-evidence
+artifact are public scientific inputs: review and commit both, then restore a
+clean worktree before any confirmatory execution. Validate the executable
+handoff without constructing the provider or making HTTP requests:
+
+```powershell
+neurallm validate --config configs/experiments/model-backed-confirmatory.local.yaml
+neurallm plan --config configs/experiments/model-backed-confirmatory.local.yaml
+neurallm run --config configs/experiments/model-backed-confirmatory.local.yaml --dry-run
+```
+
+Only after separate live-provider authorization and with a clean worktree does
+the confirmatory execution command cross the provider boundary:
+
+```powershell
+neurallm run --config configs/experiments/model-backed-confirmatory.local.yaml --execute --allow-live-provider
+```
+
+If any scientific input changes, publish a new seal and sealed configuration;
+never edit the embedded seal or expected hashes to force a match.
+
 ## Provider-free commands and explicit execution
 
 These commands validate declared inputs and identities without constructing the

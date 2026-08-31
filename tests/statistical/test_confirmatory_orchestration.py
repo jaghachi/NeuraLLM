@@ -102,6 +102,7 @@ from neurallm.providers.llama_cpp import (
 from neurallm.storage import StoreInvariantError
 from neurallm.storage.migrations import CURRENT_SCHEMA_VERSION
 from neurallm.storage.models import DurableExecutionAccounting, RunFinalization
+from tests.integration.pilot_selection_helpers import build_test_static_selection_evidence
 
 SEQUENCE_COUNT = 8
 TURNS_PER_SEQUENCE = 4
@@ -209,32 +210,33 @@ def _dataset(purpose: DatasetPurpose, *, sequence_count: int = SEQUENCE_COUNT) -
 
 
 def _selection_evidence() -> tuple[
+    PromptDataset,
     DevelopmentSelectionInput,
     StaticSelectionRecord,
     BaseDecodingProfile,
 ]:
-    development = _dataset(DatasetPurpose.DEVELOPMENT, sequence_count=1)
+    development = _dataset(DatasetPurpose.DEVELOPMENT, sequence_count=6)
     selection = select_best_static(
         (
             StaticCandidateResult(
                 profile=StaticProfile(
-                    profile_id="selected-static-v1",
+                    profile_id="static-balanced-v1",
                     temperature=0.7,
                     top_p=0.9,
                     top_k=40,
                     presence_penalty=0.0,
-                    max_tokens=128,
+                    max_tokens=192,
                 ),
                 unit_scores=(0.8,),
             ),
             StaticCandidateResult(
                 profile=StaticProfile(
-                    profile_id="unselected-static-v1",
-                    temperature=0.5,
-                    top_p=0.8,
-                    top_k=20,
+                    profile_id="static-conservative-v1",
+                    temperature=0.55,
+                    top_p=0.85,
+                    top_k=30,
                     presence_penalty=0.0,
-                    max_tokens=128,
+                    max_tokens=192,
                 ),
                 unit_scores=(0.7,),
             ),
@@ -247,6 +249,7 @@ def _selection_evidence() -> tuple[
     )
     winner = selection.winning_profile
     return (
+        development,
         DevelopmentSelectionInput(
             dataset=DatasetReference(
                 path="development.yaml",
@@ -291,7 +294,17 @@ def _draft_config(
     optional_disposition: LimitationDisposition,
     provider_kind: Literal["fake", "llama_cpp"] = "fake",
 ) -> ExperimentConfig:
-    development_input, selection, base = _selection_evidence()
+    development_dataset, development_input, selection, base = _selection_evidence()
+    provider = _provider_selection(provider_kind)
+    policy_specs = _policy_specs()
+    selection_evidence = build_test_static_selection_evidence(
+        development_dataset=development_dataset,
+        winning_profile=selection.winning_profile,
+        provider_identity=provider.expected_identity,
+        provider_effective_configuration_json=(provider.expected_effective_configuration_json),
+        policy_specs=policy_specs,
+    )
+    selection = selection_evidence.selection_record
     evaluation = EvaluationSpec(
         focal_policy_id="neural_persistent",
         required_serious_comparator_ids=("best_static", "heuristic_adaptive"),
@@ -364,13 +377,13 @@ def _draft_config(
                 dataset_sha256=dataset.dataset_hash,
             ),
         ),
-        provider=_provider_selection(provider_kind),
-        policy_specs=_policy_specs(),
+        provider=provider,
+        policy_specs=policy_specs,
         protocol=protocol,
         evaluation=evaluation,
         confirmatory_analysis=analysis,
         development_selection_input=development_input,
-        static_selection_record=selection,
+        static_selection_evidence=selection_evidence,
         model_seeds=(MODEL_SEED,),
         controller_seeds=(CONTROLLER_SEED,),
         base_decoding_profile_id=selection.winning_profile.profile_id,
@@ -1011,6 +1024,7 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
     assert plan.dataset_purpose is DatasetPurpose.EVALUATION
     assert plan.evaluation is not None
     assert plan.evaluation_spec_sha256 is not None
+    assert plan.static_selection_evidence_sha256 is not None
     spec_hash = canonical_sha256(plan.confirmatory_analysis)
     turn_input_evidence_sha256 = scientific_analysis.build_confirmatory_turn_input_evidence_sha256(
         plan
@@ -1021,6 +1035,7 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
     rebuilt = confirmatory_analysis_contract_sha256(
         scientific_identity_sha256=plan.scientific_identity_sha256,
         preregistration_sha256=plan.preregistration.seal_sha256,
+        static_selection_evidence_sha256=plan.static_selection_evidence_sha256,
         confirmatory_analysis_spec=plan.confirmatory_analysis,
         confirmatory_analysis_spec_sha256=spec_hash,
         evaluation_spec=plan.evaluation,
@@ -1034,10 +1049,27 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
     )
     assert rebuilt == build_confirmatory_analysis_contract_sha256(plan)
     assert len(rebuilt) == 64
+    drifted_selection_contract = confirmatory_analysis_contract_sha256(
+        scientific_identity_sha256=plan.scientific_identity_sha256,
+        preregistration_sha256=plan.preregistration.seal_sha256,
+        static_selection_evidence_sha256="0" * 64,
+        confirmatory_analysis_spec=plan.confirmatory_analysis,
+        confirmatory_analysis_spec_sha256=spec_hash,
+        evaluation_spec=plan.evaluation,
+        evaluation_spec_sha256=plan.evaluation_spec_sha256,
+        turn_input_evidence_sha256=turn_input_evidence_sha256,
+        prompt_family_by_sequence=prompt_family_by_sequence,
+        prompt_family_design_sha256=prompt_family_design_sha256,
+        dataset_sha256=plan.dataset_hash,
+        dataset_purpose=plan.dataset_purpose,
+        dataset_seal_sha256=plan.dataset_seal.seal_sha256,
+    )
+    assert drifted_selection_contract != rebuilt
     with pytest.raises(ValueError, match="spec hash"):
         confirmatory_analysis_contract_sha256(
             scientific_identity_sha256=plan.scientific_identity_sha256,
             preregistration_sha256=plan.preregistration.seal_sha256,
+            static_selection_evidence_sha256=plan.static_selection_evidence_sha256,
             confirmatory_analysis_spec=plan.confirmatory_analysis,
             confirmatory_analysis_spec_sha256="f" * 64,
             evaluation_spec=plan.evaluation,
@@ -1054,6 +1086,7 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
         confirmatory_analysis_contract_sha256(
             scientific_identity_sha256=plan.scientific_identity_sha256,
             preregistration_sha256=plan.preregistration.seal_sha256,
+            static_selection_evidence_sha256=plan.static_selection_evidence_sha256,
             confirmatory_analysis_spec=plan.confirmatory_analysis,
             confirmatory_analysis_spec_sha256=spec_hash,
             evaluation_spec=drifted_evaluation,
@@ -1088,6 +1121,7 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
         confirmatory_analysis_contract_sha256(
             scientific_identity_sha256=plan.scientific_identity_sha256,
             preregistration_sha256=plan.preregistration.seal_sha256,
+            static_selection_evidence_sha256=plan.static_selection_evidence_sha256,
             confirmatory_analysis_spec=plan.confirmatory_analysis,
             confirmatory_analysis_spec_sha256=spec_hash,
             evaluation_spec=plan.evaluation,
@@ -1111,6 +1145,12 @@ def test_real_closed_run_path_validates_exact_llama_manifest_and_causal_evidence
     manifest, finalization = _closed_run_evidence(plan)
     scientific_analysis._validate_manifest(plan, manifest)
     scientific_analysis._validate_finalization(plan, manifest, finalization)
+
+    with pytest.raises(StoreInvariantError, match="manifest does not exactly match"):
+        scientific_analysis._validate_manifest(
+            plan,
+            manifest.model_copy(update={"static_selection_evidence_sha256": "e" * 64}),
+        )
 
     with pytest.raises(StoreInvariantError, match="manifest does not exactly match"):
         scientific_analysis._validate_manifest(

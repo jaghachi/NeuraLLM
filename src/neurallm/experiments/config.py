@@ -33,6 +33,8 @@ from neurallm.domain.models import (
 from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.evaluation.confirmatory import ConfirmatoryAnalysisSpec
 from neurallm.evaluation.models import DatasetPurpose, EvaluationSpec
+from neurallm.evaluation.pilot_grid import DevelopmentPilotCandidateGrid
+from neurallm.evaluation.pilot_selection import DevelopmentPilotStaticSelectionEvidence
 from neurallm.evaluation.selection import StaticSelectionRecord
 from neurallm.experiments.dataset import DatasetSeal
 from neurallm.experiments.protocol import (
@@ -104,6 +106,20 @@ class DevelopmentSelectionInput(_StrictFrozenModel):
         if self.dataset.purpose is not DatasetPurpose.DEVELOPMENT:
             raise ValueError("static selection input must have development purpose")
         return self
+
+
+class StaticSelectionEvidenceReference(_StrictFrozenModel):
+    """Incidental path plus expected identity for an external pilot artifact."""
+
+    path: str = Field(min_length=1)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CandidateGridReference(_StrictFrozenModel):
+    """Incidental path plus expected identity for the predeclared pilot grid."""
+
+    path: str = Field(min_length=1)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ProviderSelection(_StrictFrozenModel):
@@ -184,7 +200,15 @@ class ExperimentConfig(_StrictFrozenModel):
     )
     evaluation: EvaluationSpec | None = None
     development_selection_input: DevelopmentSelectionInput | None = None
+    candidate_grid: DevelopmentPilotCandidateGrid | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     static_selection_record: StaticSelectionRecord | None = None
+    static_selection_evidence: DevelopmentPilotStaticSelectionEvidence | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     model_seeds: tuple[int, ...]
     controller_seeds: tuple[int, ...]
     base_decoding_profile_id: str = Field(min_length=1)
@@ -345,13 +369,29 @@ class ExperimentConfig(_StrictFrozenModel):
             source_policy_id = getattr(spec, "history_source_policy_id", None)
             if source_policy_id not in configured_policy_ids:
                 raise ValueError("matched-history policy requires its declared focal source policy")
-        if self.static_selection_record is not None:
+        if self.static_selection_record is not None and self.static_selection_evidence is not None:
+            raise ValueError(
+                "inline static selection and model-backed selection evidence are mutually exclusive"
+            )
+        resolved_selection = self.resolved_static_selection_record
+        if resolved_selection is not None:
             if self.development_selection_input is None:
                 raise ValueError("static selection record requires its declared development input")
             development_hash = self.development_selection_input.dataset.expected_dataset_sha256
-            if development_hash != self.static_selection_record.development_dataset_sha256:
+            if development_hash != resolved_selection.development_dataset_sha256:
                 raise ValueError(
                     "static selection record does not match the declared development input"
+                )
+        if self.static_selection_evidence is not None:
+            assert self.development_selection_input is not None
+            source_versions = {
+                turn.condition.dataset_version
+                for candidate in self.static_selection_evidence.candidates
+                for turn in candidate.turns
+            }
+            if source_versions != {self.development_selection_input.dataset.version}:
+                raise ValueError(
+                    "static selection evidence does not match the development dataset version"
                 )
         if self.protocol is not None:
             if self.policy_specs is None:
@@ -390,8 +430,41 @@ class ExperimentConfig(_StrictFrozenModel):
                     raise ValueError(
                         "smoke and pilot protocols cannot carry confirmatory analysis rules"
                     )
+                if self.static_selection_evidence is not None:
+                    raise ValueError("smoke and pilot protocols cannot consume selection evidence")
+                if tier is RunTier.ENGINEERING_SMOKE:
+                    if self.candidate_grid is not None:
+                        raise ValueError("engineering smoke cannot carry a candidate grid")
+                    return self
+                if self.candidate_grid is None:
+                    raise ValueError("development pilot requires a predeclared candidate grid")
+                if (
+                    self.candidate_grid.dataset_purpose is not self.dataset.purpose
+                    or self.candidate_grid.dataset_version != self.dataset.version
+                    or self.candidate_grid.dataset_sha256 != self.dataset.expected_dataset_sha256
+                ):
+                    raise ValueError(
+                        "development pilot candidate grid differs from its dataset identity"
+                    )
+                declared_profiles = {
+                    profile.profile_id: profile
+                    for profile in self.candidate_grid.candidate_profiles
+                }
+                selected_profile = declared_profiles.get(self.base_decoding_profile_id)
+                if selected_profile is None or self.base_decoding_profile != BaseDecodingProfile(
+                    temperature=selected_profile.temperature,
+                    top_p=selected_profile.top_p,
+                    top_k=selected_profile.top_k,
+                    presence_penalty=selected_profile.presence_penalty,
+                    max_tokens=selected_profile.max_tokens,
+                ):
+                    raise ValueError(
+                        "development pilot base profile must equal one declared grid profile"
+                    )
                 return self
 
+            if self.candidate_grid is not None:
+                raise ValueError("candidate grid is accepted only by development pilots")
             if self.dataset.purpose is not DatasetPurpose.EVALUATION:
                 raise ValueError("confirmatory protocol requires sealed evaluation-purpose data")
             if self.provider.kind != "llama_cpp":
@@ -439,11 +512,15 @@ class ExperimentConfig(_StrictFrozenModel):
                 raise ValueError(
                     "confirmatory recovery roles disagree with the frozen EvaluationSpec"
                 )
-            if self.development_selection_input is None or self.static_selection_record is None:
+            if (
+                self.development_selection_input is None
+                or self.static_selection_evidence is None
+                or self.static_selection_record is not None
+            ):
                 raise ValueError(
-                    "confirmatory protocol requires frozen development selection evidence"
+                    "confirmatory protocol requires external model-backed selection evidence"
                 )
-            winner = self.static_selection_record.winning_profile
+            winner = self.static_selection_evidence.selection_record.winning_profile
             if self.base_decoding_profile_id != winner.profile_id or (
                 self.base_decoding_profile
                 != BaseDecodingProfile(
@@ -455,12 +532,48 @@ class ExperimentConfig(_StrictFrozenModel):
                 )
             ):
                 raise ValueError("best_static winner must be the shared frozen base profile")
+            pilot_manifest = self.static_selection_evidence.candidates[0].source_run_manifest
+            if (
+                self.provider.expected_identity != pilot_manifest.provider_identity
+                or self.provider.expected_effective_configuration_json
+                != pilot_manifest.provider_effective_configuration_json
+            ):
+                raise ValueError(
+                    "confirmatory provider binding differs from development-pilot evidence"
+                )
+            assert self.policy_specs is not None
+            policy_config_hashes = {
+                spec.policy_id: canonical_sha256(spec) for spec in self.policy_specs
+            }
+            if dict(pilot_manifest.policy_config_hashes) != policy_config_hashes:
+                raise ValueError(
+                    "confirmatory policy specifications differ from development-pilot evidence"
+                )
+            if (
+                self.action_bounds != pilot_manifest.action_bounds
+                or self.decoding_bounds != pilot_manifest.decoding_bounds
+            ):
+                raise ValueError(
+                    "confirmatory action or decoding bounds differ from development-pilot evidence"
+                )
+            if dict(self.metric_versions) != dict(pilot_manifest.metric_versions):
+                raise ValueError(
+                    "confirmatory metric versions differ from development-pilot evidence"
+                )
+            if self.database_schema_version != pilot_manifest.database_schema_version:
+                raise ValueError(
+                    "confirmatory database schema differs from development-pilot evidence"
+                )
             return self
 
         if self.preregistration is not None:
             raise ValueError("preregistration requires a model-backed protocol")
         if self.confirmatory_analysis is not None:
             raise ValueError("confirmatory analysis rules require a model-backed protocol")
+        if self.static_selection_evidence is not None:
+            raise ValueError("model-backed selection evidence is accepted only by confirmatory")
+        if self.candidate_grid is not None:
+            raise ValueError("candidate grid requires a development-pilot protocol")
         if neural_specs and self.evaluation is not None:
             raise ValueError("neural policies are not admitted to Phase 3 efficacy evaluation")
         if matched_history_specs:
@@ -529,8 +642,32 @@ class ExperimentConfig(_StrictFrozenModel):
         return None if self.evaluation is None else canonical_sha256(self.evaluation)
 
     @property
+    def resolved_static_selection_record(self) -> StaticSelectionRecord | None:
+        """Return legacy inline or externally proven static-selection evidence."""
+
+        if self.static_selection_evidence is not None:
+            return self.static_selection_evidence.selection_record
+        return self.static_selection_record
+
+    @property
+    def static_selection_evidence_sha256(self) -> str | None:
+        """Return the external pilot evidence identity when one is configured."""
+
+        if self.static_selection_evidence is None:
+            return None
+        return self.static_selection_evidence.evidence_sha256
+
+    @property
+    def candidate_grid_sha256(self) -> str | None:
+        """Return the pre-execution development-pilot grid identity."""
+
+        if self.candidate_grid is None:
+            return None
+        return self.candidate_grid.candidate_grid_sha256
+
+    @property
     def experiment_config_hash(self) -> str:
-        """Hash scientific configuration while excluding machine-local paths."""
+        """Hash scientific configuration excluding incidental reference paths."""
 
         payload: dict[str, object] = {
             "schema_version": self.schema_version,
@@ -567,9 +704,15 @@ class ExperimentConfig(_StrictFrozenModel):
             payload["evaluation"] = self.evaluation
             payload["evaluation_spec_sha256"] = self.evaluation_spec_sha256
             payload["development_selection_input"] = self.development_selection_input
-            payload["static_selection_record"] = self.static_selection_record
+            if self.static_selection_evidence is None:
+                payload["static_selection_record"] = self.static_selection_record
+            else:
+                payload["static_selection_evidence"] = self.static_selection_evidence
         if self.protocol is not None:
             payload["protocol"] = self.protocol
+        if self.candidate_grid is not None:
+            payload["candidate_grid"] = self.candidate_grid
+            payload["candidate_grid_sha256"] = self.candidate_grid_sha256
         if self.confirmatory_analysis is not None:
             payload["confirmatory_analysis"] = self.confirmatory_analysis
         return canonical_sha256(payload)
@@ -585,6 +728,8 @@ class LoadedExperimentConfig:
     provider_config_path: Path | None
     artifact_root: Path
     development_selection_dataset_path: Path | None = None
+    candidate_grid_path: Path | None = None
+    static_selection_evidence_path: Path | None = None
 
 
 def _resolve_reference(base: Path, value: str) -> Path:
@@ -600,8 +745,32 @@ def load_experiment_config(path: Path) -> LoadedExperimentConfig:
     if not isinstance(path, Path):
         raise TypeError("path must be a pathlib.Path")
     source_path = path.expanduser().resolve(strict=True)
-    config = ExperimentConfig.model_validate(load_yaml_mapping(source_path))
+    source_payload = load_yaml_mapping(source_path)
     base = source_path.parent
+    candidate_grid_path: Path | None = None
+    candidate_grid_payload = source_payload.get("candidate_grid")
+    if candidate_grid_payload is not None:
+        grid_reference = CandidateGridReference.model_validate(candidate_grid_payload)
+        candidate_grid_path = _resolve_reference(base, grid_reference.path)
+        from neurallm.evaluation.pilot_grid import load_development_pilot_candidate_grid
+
+        candidate_grid = load_development_pilot_candidate_grid(
+            candidate_grid_path,
+            expected_sha256=grid_reference.expected_sha256,
+        )
+        source_payload["candidate_grid"] = candidate_grid.model_dump(mode="python")
+    evidence_path: Path | None = None
+    evidence_payload = source_payload.get("static_selection_evidence")
+    if evidence_payload is not None:
+        evidence_reference = StaticSelectionEvidenceReference.model_validate(evidence_payload)
+        evidence_path = _resolve_reference(base, evidence_reference.path)
+        from neurallm.experiments.static_selection import load_static_selection_evidence
+
+        evidence = load_static_selection_evidence(evidence_path)
+        if evidence.evidence_sha256 != evidence_reference.expected_sha256:
+            raise ValueError("static selection evidence differs from its expected SHA-256")
+        source_payload["static_selection_evidence"] = evidence.model_dump(mode="python")
+    config = ExperimentConfig.model_validate(source_payload)
     dataset_path = _resolve_reference(base, config.dataset.path)
     provider_path = (
         None
@@ -621,11 +790,14 @@ def load_experiment_config(path: Path) -> LoadedExperimentConfig:
         provider_config_path=provider_path,
         artifact_root=artifact_root,
         development_selection_dataset_path=development_selection_path,
+        candidate_grid_path=candidate_grid_path,
+        static_selection_evidence_path=evidence_path,
     )
 
 
 __all__ = [
     "BaseDecodingProfile",
+    "CandidateGridReference",
     "ConfirmatoryAnalysisSpec",
     "DatasetReference",
     "DevelopmentSelectionInput",
@@ -635,5 +807,6 @@ __all__ = [
     "PreregistrationSeal",
     "ProviderSelection",
     "RunTier",
+    "StaticSelectionEvidenceReference",
     "load_experiment_config",
 ]

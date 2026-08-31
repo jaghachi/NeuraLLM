@@ -40,6 +40,7 @@ from neurallm.providers.base import (
     effective_parameters_match_request,
 )
 from neurallm.providers.llama_cpp import require_llama_cpp_provider_binding
+from neurallm.providers.llama_cpp_evidence import require_llama_cpp_generation_binding
 from neurallm.storage.errors import (
     DuplicateLogicalRequestError,
     HistoryMismatchError,
@@ -1836,6 +1837,7 @@ class SQLiteRunStore:
             or run_manifest.run_tier != "confirmatory"
             or not run_manifest.working_tree_clean
             or run_manifest.confirmatory_analysis_contract_sha256 is None
+            or run_manifest.static_selection_evidence_sha256 is None
         ):
             fail("scientific analysis requires a schema-v2 confirmatory run manifest")
         if (
@@ -2047,6 +2049,12 @@ class SQLiteRunStore:
             or manifest.preregistration_sha256 != run_manifest.preregistration_sha256
         ):
             fail("scientific analysis does not match the preregistration identity")
+        if (
+            run_manifest.static_selection_evidence_sha256 is None
+            or manifest.static_selection_evidence_sha256
+            != run_manifest.static_selection_evidence_sha256
+        ):
+            fail("scientific analysis does not match the static-selection evidence")
         if manifest.dataset_sha256 != run_manifest.dataset_hash:
             fail("scientific analysis does not match the run dataset")
         if manifest.evaluation_input_sha256 != result.input_sha256:
@@ -2090,10 +2098,12 @@ class SQLiteRunStore:
 
         assert run_manifest.evaluation_spec_sha256 is not None
         assert run_manifest.turn_input_evidence_sha256 is not None
+        assert run_manifest.static_selection_evidence_sha256 is not None
         try:
             expected_contract_sha256 = confirmatory_analysis_contract_sha256(
                 scientific_identity_sha256=manifest.scientific_identity_sha256,
                 preregistration_sha256=manifest.preregistration_sha256,
+                static_selection_evidence_sha256=(manifest.static_selection_evidence_sha256),
                 confirmatory_analysis_spec=manifest.confirmatory_analysis_spec,
                 confirmatory_analysis_spec_sha256=(manifest.confirmatory_analysis_spec_sha256),
                 evaluation_spec=evaluation_spec,
@@ -2406,6 +2416,16 @@ class SQLiteRunStore:
             raise StoreInvariantError("response effective parameters do not match the request")
         if response.raw_metadata.request_sha256 != canonical_sha256(request):
             raise StoreInvariantError("response metadata does not bind the canonical request")
+        if (
+            response.provider_identity.provider_type == "llama_cpp"
+            or response.raw_metadata.generation_method == "llama_cpp_completion_http_v1"
+        ):
+            try:
+                require_llama_cpp_generation_binding(request, response)
+            except (TypeError, ValueError) as exc:
+                raise StoreInvariantError(
+                    "llama_cpp wire evidence does not bind the stored request and response"
+                ) from exc
 
     def _validate_stored_history_binding(
         self,

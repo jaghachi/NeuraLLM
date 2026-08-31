@@ -22,6 +22,10 @@ from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.evaluation.attribution import AttributionAnalysisSpec
 from neurallm.evaluation.confirmatory import ConfirmatoryAnalysisSpec, RecoveryEventSpec
 from neurallm.evaluation.models import DatasetPurpose, EvaluationSpec, MatchedUnitKey
+from neurallm.evaluation.pilot_grid import (
+    MODEL_BACKED_STATIC_CANDIDATE_PROFILES,
+    DevelopmentPilotCandidateGrid,
+)
 from neurallm.evaluation.recovery import RecoveryAnalysisSpec, RecoveryMetricName
 from neurallm.evaluation.scientific import EfficacyAnalysisSpec, LimitationDisposition
 from neurallm.evaluation.selection import (
@@ -64,6 +68,7 @@ from neurallm.providers.fake import (
     fake_provider_identity,
 )
 from neurallm.storage.migrations import CURRENT_SCHEMA_VERSION
+from tests.integration.pilot_selection_helpers import build_test_static_selection_evidence
 
 
 def _llama_provider_selection() -> ProviderSelection:
@@ -232,6 +237,13 @@ def _config(
     selection = None
     evaluation = None
     confirmatory_analysis = None
+    candidate_grid = None
+    static_selection_evidence = None
+    provider = ProviderSelection(
+        kind="fake",
+        expected_identity=fake_provider_identity(),
+        expected_effective_configuration_json=fake_provider_effective_configuration_json(),
+    )
     base = BaseDecodingProfile(
         temperature=0.7,
         top_p=0.9,
@@ -240,9 +252,58 @@ def _config(
         max_tokens=64,
     )
     base_id = "model-backed-base-v1"
+    if tier is RunTier.DEVELOPMENT_PILOT:
+        selected_profile = MODEL_BACKED_STATIC_CANDIDATE_PROFILES[0]
+        candidate_grid = DevelopmentPilotCandidateGrid(
+            dataset_version=dataset.version,
+            dataset_purpose=DatasetPurpose.DEVELOPMENT,
+            dataset_sha256=dataset.dataset_hash,
+            candidate_profiles=MODEL_BACKED_STATIC_CANDIDATE_PROFILES,
+        )
+        base = BaseDecodingProfile(
+            temperature=selected_profile.temperature,
+            top_p=selected_profile.top_p,
+            top_k=selected_profile.top_k,
+            presence_penalty=selected_profile.presence_penalty,
+            max_tokens=selected_profile.max_tokens,
+        )
+        base_id = selected_profile.profile_id
     if tier is RunTier.CONFIRMATORY:
-        development_input, selection, base = _selection_evidence()
-        base_id = selection.winning_profile.profile_id
+        development = _dataset(
+            DatasetPurpose.DEVELOPMENT,
+            sequence_count=6,
+            turns_per_sequence=4,
+        )
+        static_selection_evidence = build_test_static_selection_evidence(
+            development_dataset=development,
+            winning_profile=MODEL_BACKED_STATIC_CANDIDATE_PROFILES[0],
+        )
+        winner = static_selection_evidence.selection_record.winning_profile
+        pilot_manifest = static_selection_evidence.candidates[0].source_run_manifest
+        development_input = DevelopmentSelectionInput(
+            dataset=DatasetReference(
+                path="development.yaml",
+                version=development.version,
+                purpose=DatasetPurpose.DEVELOPMENT,
+                expected_dataset_sha256=development.dataset_hash,
+            )
+        )
+        base = BaseDecodingProfile(
+            temperature=winner.temperature,
+            top_p=winner.top_p,
+            top_k=winner.top_k,
+            presence_penalty=winner.presence_penalty,
+            max_tokens=winner.max_tokens,
+        )
+        base_id = winner.profile_id
+        provider = ProviderSelection(
+            kind="llama_cpp",
+            config_path="llama-cpp.local.yaml",
+            expected_identity=pilot_manifest.provider_identity,
+            expected_effective_configuration_json=(
+                pilot_manifest.provider_effective_configuration_json
+            ),
+        )
         evaluation = EvaluationSpec(
             focal_policy_id="neural_persistent",
             required_serious_comparator_ids=("best_static", "heuristic_adaptive"),
@@ -292,24 +353,16 @@ def _config(
             expected_dataset_sha256=dataset.dataset_hash,
             seal=dataset_seal,
         ),
-        provider=(
-            _llama_provider_selection()
-            if tier is RunTier.CONFIRMATORY
-            else ProviderSelection(
-                kind="fake",
-                expected_identity=fake_provider_identity(),
-                expected_effective_configuration_json=(
-                    fake_provider_effective_configuration_json()
-                ),
-            )
-        ),
+        provider=provider,
         policy_specs=_policy_specs(),
         protocol=protocol,
         preregistration=preregistration,
         confirmatory_analysis=confirmatory_analysis,
         evaluation=evaluation,
         development_selection_input=development_input,
+        candidate_grid=candidate_grid,
         static_selection_record=selection,
+        static_selection_evidence=static_selection_evidence,
         model_seeds=(11,),
         controller_seeds=(21,),
         base_decoding_profile_id=base_id,
@@ -666,14 +719,13 @@ def test_confirmatory_candidate_can_be_sealed_and_any_scientific_drift_fails() -
     assert sealed.protocol.efficacy_policy_ids == EFFICACY_POLICY_IDS
     assert sealed.protocol.attribution.policy_id not in sealed.protocol.efficacy_policy_ids
 
-    drifted_config = ExperimentConfig.model_validate(
-        {
-            **sealed_config.model_dump(mode="python"),
-            "action_bounds": ActionBounds(temperature_delta=(-0.05, 0.05)),
-        }
-    )
-    with pytest.raises(ValidationError, match="preregistration seal"):
-        build_plan(*_loaded(drifted_config, dataset))
+    with pytest.raises(ValidationError, match="development-pilot evidence"):
+        ExperimentConfig.model_validate(
+            {
+                **sealed_config.model_dump(mode="python"),
+                "action_bounds": ActionBounds(temperature_delta=(-0.05, 0.05)),
+            }
+        )
 
 
 def test_legacy_protocol_fields_are_absent_and_phase4_hash_is_unchanged() -> None:

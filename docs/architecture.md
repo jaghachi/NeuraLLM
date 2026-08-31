@@ -450,6 +450,13 @@ cannot be overwritten or reanalyzed in place because their run manifest is
 also v1-bound. Replacement requires a new v2 confirmatory workflow in a fresh
 run directory.
 
+This v2 Phase 5 envelope is still a pre-merge, unreleased contract. The public
+`v2.0.0-beta.1` tag predates Phase 5, and no live or claim-eligible v2 artifact
+exists. Provenance fields may therefore still be tightened within this open
+implementation branch without implying compatibility with an earlier v2
+artifact; the contract becomes frozen only at the separately authorized Phase
+5 release boundary.
+
 The v2 run manifest retains canonical `EvaluationSpec` JSON plus its SHA-256
 and the canonical SHA-256 of every frozen prompt-side `TurnInputEvidence`
 record. At scientific persistence, SQLite requires exact input coverage,
@@ -469,6 +476,9 @@ The three frozen run tiers have exact request-accounting schedules:
 The engineering dataset is a 2-sequence by 2-turn development fixture with
 SHA-256
 `14c382a04acbe9394474f05cf84d8389833058afc2dc6feda21a023d46e45ef3`.
+The development-pilot dataset is the 6-sequence by 4-turn
+`phase3-baseline-development-v1` fixture with SHA-256
+`a6c41a046cb84bc9a806866a7393196784eb769118f74cbe4d44d0f3e247df97`.
 The confirmatory dataset is a sealed 24-sequence by 4-turn evaluation fixture
 with SHA-256
 `7cf2d3a9fa35735aadc9186438277d2b5f6b7beb9f96e9fc9bbeb400da2b5d72`.

@@ -246,6 +246,11 @@ class SeedSchedule(StrictFrozenModel):
     model_seeds: tuple[SqliteInt64, ...]
     controller_seeds: tuple[SqliteInt64, ...]
 
+    @field_validator("model_seeds", "controller_seeds", mode="before")
+    @classmethod
+    def _accept_serialized_seed_sequences(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
     @model_validator(mode="after")
     def _validate_seed_streams(self) -> Self:
         for name, values in (
@@ -266,6 +271,17 @@ class ActionBounds(StrictFrozenModel):
     top_p_delta: tuple[FiniteFloat, FiniteFloat] = (-0.05, 0.05)
     top_k_delta: tuple[int, int] = (-10, 10)
     presence_penalty_delta: tuple[FiniteFloat, FiniteFloat] = (-0.20, 0.20)
+
+    @field_validator(
+        "temperature_delta",
+        "top_p_delta",
+        "top_k_delta",
+        "presence_penalty_delta",
+        mode="before",
+    )
+    @classmethod
+    def _accept_serialized_intervals(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def _validate_intervals(self) -> Self:
@@ -309,6 +325,17 @@ class DecodingBounds(StrictFrozenModel):
     top_p: tuple[TopP, TopP] = (0.01, 1.0)
     top_k: tuple[NonNegativeInt, NonNegativeInt] = (0, 200)
     presence_penalty: tuple[FiniteFloat, FiniteFloat] = (-2.0, 2.0)
+
+    @field_validator(
+        "temperature",
+        "top_p",
+        "top_k",
+        "presence_penalty",
+        mode="before",
+    )
+    @classmethod
+    def _accept_serialized_intervals(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def _validate_intervals(self) -> Self:
@@ -365,6 +392,14 @@ class RunManifest(StrictFrozenModel):
         exclude_if=lambda value: value is None,
     )
     preregistration_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    static_selection_evidence_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    candidate_grid_sha256: Sha256Hex | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -432,10 +467,19 @@ class RunManifest(StrictFrozenModel):
                 raise ValueError("model-backed run tier does not match its decision rule")
             if self.scientific_identity_sha256 is None:
                 raise ValueError("model-backed manifest requires the frozen scientific identity")
+            development_pilot = model_backed_tier == "development_pilot"
+            if development_pilot != (self.candidate_grid_sha256 is not None):
+                raise ValueError(
+                    "development-pilot manifest and candidate-grid identity must appear together"
+                )
             confirmatory = model_backed_tier == "confirmatory"
             if confirmatory != (self.preregistration_sha256 is not None):
                 raise ValueError(
                     "confirmatory manifest and preregistration identity must appear together"
+                )
+            if confirmatory != (self.static_selection_evidence_sha256 is not None):
+                raise ValueError(
+                    "confirmatory manifest and static-selection evidence must appear together"
                 )
             if confirmatory != (self.confirmatory_analysis_contract_sha256 is not None):
                 raise ValueError(
@@ -449,6 +493,8 @@ class RunManifest(StrictFrozenModel):
             self.run_tier is not None
             or self.scientific_identity_sha256 is not None
             or self.preregistration_sha256 is not None
+            or self.static_selection_evidence_sha256 is not None
+            or self.candidate_grid_sha256 is not None
             or self.confirmatory_analysis_contract_sha256 is not None
             or self.turn_input_evidence_sha256 is not None
         ):

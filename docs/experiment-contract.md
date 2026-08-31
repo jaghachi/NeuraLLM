@@ -174,13 +174,95 @@ The checked-in model-backed datasets are frozen as:
 
 | Purpose | Dataset | Exact shape | Canonical identity |
 | --- | --- | --- | --- |
-| Development | `datasets/development/model-backed-engineering-smoke-v1.yaml` | 2 sequences by 2 turns | `14c382a04acbe9394474f05cf84d8389833058afc2dc6feda21a023d46e45ef3` |
+| Development smoke | `datasets/development/model-backed-engineering-smoke-v1.yaml` | 2 sequences by 2 turns | `14c382a04acbe9394474f05cf84d8389833058afc2dc6feda21a023d46e45ef3` |
+| Development pilot | `datasets/development/phase3-baseline-development-v1.yaml` | 6 sequences by 4 turns | `a6c41a046cb84bc9a806866a7393196784eb769118f74cbe4d44d0f3e247df97` |
 | Evaluation | `datasets/evaluation/model-backed-confirmatory-v1.yaml` | 24 sequences by 4 turns | `7cf2d3a9fa35735aadc9186438277d2b5f6b7beb9f96e9fc9bbeb400da2b5d72`; must match `model-backed-confirmatory-v1.seal.yaml` |
 
 The pilot may use development data only. It may identify broken metrics,
 calibrate thresholds, select the static baseline, and finalize validators and
 bounds, but it cannot inspect or tune against the sealed confirmatory
 responses. All confirmatory identities are immutable once execution begins.
+
+### Development-pilot static-selection handoff
+
+Run each declared static candidate as a separate, complete live development
+pilot. Start from the checked-in template, keep the provider reference exactly
+`../providers/llama_cpp.local.yaml`, and create exactly three local copies with
+distinct experiment IDs and artifact roots:
+
+```powershell
+Copy-Item configs/experiments/model-backed-development-pilot.example.yaml configs/experiments/model-backed-development-pilot-static-balanced.local.yaml
+Copy-Item configs/experiments/model-backed-development-pilot.example.yaml configs/experiments/model-backed-development-pilot-static-conservative.local.yaml
+Copy-Item configs/experiments/model-backed-development-pilot.example.yaml configs/experiments/model-backed-development-pilot-static-exploratory.local.yaml
+
+neurallm validate --config configs/experiments/model-backed-development-pilot-static-balanced.local.yaml
+neurallm run --config configs/experiments/model-backed-development-pilot-static-balanced.local.yaml --dry-run
+neurallm run --config configs/experiments/model-backed-development-pilot-static-balanced.local.yaml --execute --allow-live-provider
+
+neurallm validate --config configs/experiments/model-backed-development-pilot-static-conservative.local.yaml
+neurallm run --config configs/experiments/model-backed-development-pilot-static-conservative.local.yaml --dry-run
+neurallm run --config configs/experiments/model-backed-development-pilot-static-conservative.local.yaml --execute --allow-live-provider
+
+neurallm validate --config configs/experiments/model-backed-development-pilot-static-exploratory.local.yaml
+neurallm run --config configs/experiments/model-backed-development-pilot-static-exploratory.local.yaml --dry-run
+neurallm run --config configs/experiments/model-backed-development-pilot-static-exploratory.local.yaml --execute --allow-live-provider
+```
+
+Before validation, copy the profile values verbatim from
+`model-backed-development-pilot-candidate-grid.json`; do not choose or tune
+values at execution time:
+
+| profile ID | temperature | top_p | top_k | presence_penalty | max_tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `static-balanced-v1` | 0.7 | 0.9 | 40 | 0.0 | 192 |
+| `static-conservative-v1` | 0.55 | 0.85 | 30 | 0.0 | 192 |
+| `static-exploratory-v1` | 0.85 | 0.95 | 60 | 0.1 | 192 |
+
+Every candidate must complete the exact 240-generation schedule. Across copies,
+change only the experiment/artifact identities and the exact declared profile.
+The dataset and exact
+prompt inputs, llama.cpp provider/model/effective configuration, policy
+specifications, metric versions, seed schedule, bounds, database schema, and
+source commit must remain identical. `max_tokens` is fixed at 192 and is never
+a selectable control dimension. Missing, extra, or substituted profiles are
+rejected.
+
+After all three candidate runs finalize successfully, derive one immutable,
+provider-free public artifact from their canonical SQLite stores:
+
+```powershell
+neurallm freeze-static-selection `
+  --candidate-run-dir runs/model-backed-development-pilot-static-balanced-v1 `
+  --candidate-run-dir runs/model-backed-development-pilot-static-conservative-v1 `
+  --candidate-run-dir runs/model-backed-development-pilot-static-exploratory-v1 `
+  --candidate-grid configs/experiments/model-backed-development-pilot-candidate-grid.json `
+  --output evidence/development/model-backed-static-selection.json
+```
+
+The command reconstructs every selected task score from committed prompt,
+response, validator, and metric evidence; verifies exact 48-turn `best_static`
+coverage per candidate; aggregates the 12 `prompt sequence x model seed` units;
+and freezes the deterministic winner. It constructs no provider and requests no
+network access. Archive and retain every source run directory printed by the
+command even though source run-directory locations are deliberately excluded
+from the canonical artifact; the exact provider identity, including its bound
+model path, remains part of the evidence.
+
+Commit the canonical evidence artifact, then update the confirmatory draft's
+`static_selection_evidence.expected_sha256`, winning
+`base_decoding_profile_id`, and complete `base_decoding_profile` from the
+command output. The confirmatory loader revalidates the artifact against the
+declared development dataset and requires exact pilot-to-confirmatory provider,
+policy, bounds, metric, and database-schema bindings; an unrelated inline Phase
+3 score vector cannot satisfy this contract.
+
+Static selection is only one post-pilot action. Validators, action and decoding
+bounds, guardrails, practical-effect thresholds, and statistical thresholds
+must be reasoned from development evidence, recorded with their rationale, and
+then frozen by preregistration. `freeze-static-selection` does not calibrate any
+of those choices automatically. The pilot and its selection artifact remain
+development-only evidence and support no efficacy, attribution, confirmatory,
+or final scientific claim.
 
 ## Experimental unit and condition identity
 

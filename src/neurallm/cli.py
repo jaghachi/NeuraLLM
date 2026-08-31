@@ -7,9 +7,13 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from yaml import YAMLError
+
 from neurallm import __version__
 from neurallm.domain.serialization import canonical_json
 from neurallm.experiments.preregistration import publish_preregistration
+from neurallm.experiments.runner import GenerationDispatchError
+from neurallm.experiments.static_selection import freeze_static_selection
 from neurallm.experiments.workflow import (
     LiveProviderAuthorizationError,
     PreparedExperiment,
@@ -17,8 +21,20 @@ from neurallm.experiments.workflow import (
     prepare_experiment,
 )
 from neurallm.experiments.yaml_loader import load_yaml_mapping
-from neurallm.providers import LlamaCppProviderConfig, preflight_llama_cpp
+from neurallm.providers import LlamaCppProviderConfig, LlamaCppProviderError, preflight_llama_cpp
 from neurallm.reporting import CLOSED_RUN_ARTIFACTS, export_closed_run
+from neurallm.reporting.status_cli import add_status_subcommand, build_status_payload
+from neurallm.storage import StorageError
+
+EXPECTED_CLI_EXCEPTIONS: tuple[type[Exception], ...] = (
+    OSError,
+    ValueError,
+    YAMLError,
+    LiveProviderAuthorizationError,
+    GenerationDispatchError,
+    LlamaCppProviderError,
+    StorageError,
+)
 
 
 def _add_config_argument(parser: argparse.ArgumentParser) -> None:
@@ -37,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("status", help="print implementation and scientific status")
+    add_status_subcommand(subparsers)
 
     preflight = subparsers.add_parser(
         "preflight",
@@ -60,6 +76,39 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="explicit canonical JSON preregistration seal output path",
+    )
+
+    freeze_selection = subparsers.add_parser(
+        "freeze-static-selection",
+        help="derive and publish best_static evidence from finalized live pilot runs",
+    )
+    freeze_selection.add_argument(
+        "--candidate-run-dir",
+        action="append",
+        type=Path,
+        required=True,
+        dest="candidate_run_directories",
+        help="finalized llama.cpp development-pilot run directory; repeat for each profile",
+    )
+    freeze_selection.add_argument(
+        "--candidate-grid",
+        type=Path,
+        required=True,
+        help="exact canonical JSON candidate grid committed before pilot execution",
+    )
+    freeze_selection.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="canonical JSON static-selection evidence output path",
+    )
+    preregister.add_argument(
+        "--sealed-config-output",
+        type=Path,
+        help=(
+            "optional executable YAML with the seal embedded; must be beside --config "
+            "so relative references remain unchanged"
+        ),
     )
 
     validate = subparsers.add_parser("validate", help="validate config, dataset, and contracts")
@@ -144,27 +193,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "status":
             _print(
-                {
-                    "package": "neurallm",
-                    "version": __version__,
-                    "implementation_phase": 5,
-                    "phase_2_kernel_available": True,
-                    "phase_3_baseline_evaluator_available": True,
-                    "phase_4_causal_attribution_available": True,
-                    "model_backed_protocol_available": True,
-                    "confirmatory_decision_engine_available": True,
-                    "offline_engineering_smoke_config": (
-                        "configs/experiments/model-backed-engineering-smoke.yaml"
-                    ),
-                    "live_smoke_template": (
-                        "configs/experiments/model-backed-live-smoke.example.yaml"
-                    ),
-                    "readiness": "READY_FOR_LIVE_SMOKE",
-                    "scientific_decision": None,
-                    "live_provider_validated": False,
-                    "live_smoke_completed": False,
-                    "confirmatory_run_completed": False,
-                }
+                build_status_payload(
+                    tuple(args.status_run_directories or ()),
+                    tuple(args.status_artifacts or ()),
+                    args.candidate_grid,
+                    package_version=__version__,
+                )
             )
             return 0
 
@@ -184,18 +218,60 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "preregister":
-            publication = publish_preregistration(args.config, args.output)
+            publication = publish_preregistration(
+                args.config,
+                args.output,
+                args.sealed_config_output,
+            )
+            payload: dict[str, object] = {
+                "command": "preregister",
+                "config_path": str(publication.config_path),
+                "dataset_path": str(publication.dataset_path),
+                "output_path": str(publication.output_path),
+                "experiment_id": publication.seal.experiment_id,
+                "run_tier": publication.seal.run_tier,
+                "scientific_identity_sha256": (publication.scientific_identity_sha256),
+                "preregistration_sha256": publication.preregistration_sha256,
+                "created": publication.created,
+                "provider_constructed": False,
+                "network_requested": False,
+            }
+            if publication.development_selection_dataset_path is not None:
+                payload["development_selection_dataset_path"] = str(
+                    publication.development_selection_dataset_path
+                )
+            if publication.sealed_config_path is not None:
+                payload["sealed_config_path"] = str(publication.sealed_config_path)
+                payload["sealed_config_created"] = publication.sealed_config_created
+            _print(payload)
+            return 0
+
+        if args.command == "freeze-static-selection":
+            selection_publication = freeze_static_selection(
+                tuple(args.candidate_run_directories),
+                args.candidate_grid,
+                args.output,
+            )
             _print(
                 {
-                    "command": "preregister",
-                    "config_path": str(publication.config_path),
-                    "dataset_path": str(publication.dataset_path),
-                    "output_path": str(publication.output_path),
-                    "experiment_id": publication.seal.experiment_id,
-                    "run_tier": publication.seal.run_tier,
-                    "scientific_identity_sha256": (publication.scientific_identity_sha256),
-                    "preregistration_sha256": publication.preregistration_sha256,
-                    "created": publication.created,
+                    "command": "freeze-static-selection",
+                    "output_path": str(selection_publication.output_path),
+                    "created": selection_publication.created,
+                    "candidate_count": len(selection_publication.evidence.candidates),
+                    "source_run_directories": [
+                        str(path) for path in selection_publication.source_run_directories
+                    ],
+                    "candidate_grid_path": str(selection_publication.candidate_grid_path),
+                    "candidate_grid_sha256": (selection_publication.evidence.candidate_grid_sha256),
+                    "winning_profile": (
+                        selection_publication.evidence.selection_record.winning_profile
+                    ),
+                    "selection_result_sha256": (
+                        selection_publication.evidence.selection_record.selection_result_sha256
+                    ),
+                    "static_selection_evidence_sha256": (
+                        selection_publication.evidence.evidence_sha256
+                    ),
                     "provider_constructed": False,
                     "network_requested": False,
                 }
@@ -281,7 +357,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             )
             return 0
-    except Exception as exc:
+    except EXPECTED_CLI_EXCEPTIONS as exc:
         print(
             canonical_json(
                 {
