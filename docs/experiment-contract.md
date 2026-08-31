@@ -559,9 +559,12 @@ scientific-analysis rows are rejected rather than migrated. Their run manifests
 remain v1-bound, so replacement requires a new v2 confirmatory workflow in a
 fresh run directory rather than an in-place offline reanalysis.
 
-The run manifest also binds canonical `EvaluationSpec` JSON and its SHA-256.
-Persistence reconstructs guardrail status and thresholds from committed traces
-and metrics under that pre-execution spec before accepting a scientific result.
+The run manifest also binds canonical `EvaluationSpec` JSON and its SHA-256,
+plus the SHA-256 of the complete condition-keyed `TurnInputEvidence` tuple.
+Persistence requires exact prompt-side input coverage, recomputes deterministic
+response metrics from each committed input and response, and reconstructs
+guardrail status and thresholds from committed traces and metrics under that
+pre-execution spec before accepting a scientific result.
 
 ## Phase 3 and final decision states
 

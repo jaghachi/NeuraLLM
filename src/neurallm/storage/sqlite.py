@@ -33,6 +33,7 @@ from neurallm.evaluation.scientific import (
     EfficacyComparisonResult,
     ScientificGuardrailResult,
 )
+from neurallm.metrics import MetricContext, compute_response_metrics
 from neurallm.providers.base import (
     GenerationRequest,
     GenerationResponse,
@@ -1859,13 +1860,36 @@ class SQLiteRunStore:
         input_by_id = {evidence.condition_id: evidence for evidence in stored_inputs}
         if input_by_id.keys() != turn_by_id.keys():
             fail("scientific analysis requires exact prompt-side input evidence coverage")
+        if (
+            run_manifest.turn_input_evidence_sha256 is None
+            or canonical_sha256(tuple(sorted(stored_inputs, key=lambda item: item.condition_id)))
+            != run_manifest.turn_input_evidence_sha256
+        ):
+            fail("scientific prompt-side inputs do not match the frozen run identity")
         prompt_family_by_sequence: dict[str, str] = {}
         for condition_id, turn in turn_by_id.items():
-            prompt_family = input_by_id[condition_id].prompt_family
+            evidence = input_by_id[condition_id]
+            prompt_family = evidence.prompt_family
             sequence_id = turn.condition.prompt_sequence_id
             previous_family = prompt_family_by_sequence.setdefault(sequence_id, prompt_family)
             if previous_family != prompt_family:
                 fail("scientific prompt family is inconsistent within a prompt sequence")
+            response = turn.response
+            metrics = turn.metrics
+            if response is None or metrics is None:
+                fail("scientific input reconstruction requires committed response metrics")
+                return
+            reconstructed_metrics = compute_response_metrics(
+                MetricContext(
+                    prompt_case_id=evidence.prompt_case_id,
+                    prompt_family=evidence.prompt_family,
+                    prompt=turn.request.prompt,
+                    response_text=response.text,
+                    validator=evidence.validator,
+                )
+            )
+            if metrics != reconstructed_metrics:
+                fail("scientific response metrics do not reconstruct from committed inputs")
         if dict(sorted(prompt_family_by_sequence.items())) != dict(
             manifest.prompt_family_by_sequence
         ):
@@ -2065,6 +2089,7 @@ class SQLiteRunStore:
         )
 
         assert run_manifest.evaluation_spec_sha256 is not None
+        assert run_manifest.turn_input_evidence_sha256 is not None
         try:
             expected_contract_sha256 = confirmatory_analysis_contract_sha256(
                 scientific_identity_sha256=manifest.scientific_identity_sha256,
@@ -2073,6 +2098,7 @@ class SQLiteRunStore:
                 confirmatory_analysis_spec_sha256=(manifest.confirmatory_analysis_spec_sha256),
                 evaluation_spec=evaluation_spec,
                 evaluation_spec_sha256=run_manifest.evaluation_spec_sha256,
+                turn_input_evidence_sha256=run_manifest.turn_input_evidence_sha256,
                 prompt_family_by_sequence=manifest.prompt_family_by_sequence,
                 prompt_family_design_sha256=manifest.prompt_family_design_sha256,
                 dataset_sha256=manifest.dataset_sha256,

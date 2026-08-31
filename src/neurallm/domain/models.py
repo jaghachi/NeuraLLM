@@ -348,6 +348,10 @@ class RunManifest(StrictFrozenModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    turn_input_evidence_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     phase3_analysis_contract_sha256: Sha256Hex | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -437,11 +441,16 @@ class RunManifest(StrictFrozenModel):
                 raise ValueError(
                     "confirmatory manifest and final analysis contract must appear together"
                 )
+            if confirmatory != (self.turn_input_evidence_sha256 is not None):
+                raise ValueError(
+                    "confirmatory manifest and frozen turn-input identity must appear together"
+                )
         elif (
             self.run_tier is not None
             or self.scientific_identity_sha256 is not None
             or self.preregistration_sha256 is not None
             or self.confirmatory_analysis_contract_sha256 is not None
+            or self.turn_input_evidence_sha256 is not None
         ):
             raise ValueError("only model-backed manifests may carry protocol identities")
         for policy_id, source_policy_id in self.matched_history_policy_sources.items():

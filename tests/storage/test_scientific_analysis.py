@@ -63,7 +63,7 @@ from neurallm.experiments.scientific_analysis import (
     ConfirmatoryAnalysisContext,
     confirmatory_analysis_contract_sha256,
 )
-from neurallm.metrics import ValidatorSpec
+from neurallm.metrics import MetricContext, ValidatorSpec, compute_response_metrics
 from neurallm.providers.base import GenerationMetadata, GenerationResponse
 from neurallm.providers.fake import FakeProvider
 from neurallm.providers.llama_cpp import (
@@ -84,6 +84,14 @@ from neurallm.storage import (
     TurnInputEvidence,
 )
 from tests.storage.helpers import make_metrics, make_request, make_trace
+
+_SCIENTIFIC_POLICY_IDS = (
+    "best_static",
+    "heuristic_adaptive",
+    "neural_matched_history_state_reset",
+    "neural_persistent",
+    "random_matched",
+)
 
 
 def _llama_identity_and_effective_json() -> tuple[ProviderIdentity, str]:
@@ -125,6 +133,37 @@ def _llama_identity_and_effective_json() -> tuple[ProviderIdentity, str]:
     return llama_cpp_provider_identity(effective), canonical_json(effective)
 
 
+def _turn_inputs(
+    identity: ProviderIdentity,
+    *,
+    prompt_family: str = "family-a",
+    prompt_features: PromptFeatures | None = None,
+    validator: ValidatorSpec | None = None,
+) -> tuple[TurnInputEvidence, ...]:
+    features = prompt_features or PromptFeatures({})
+    frozen_validator = validator or ValidatorSpec(kind="non_empty")
+    return tuple(
+        sorted(
+            (
+                TurnInputEvidence(
+                    condition_id=make_request(
+                        identity,
+                        policy_id=policy_id,
+                        turn_index=turn_index,
+                    ).condition_id,
+                    prompt_case_id=f"case-{turn_index}",
+                    prompt_family=prompt_family,
+                    prompt_features=features,
+                    validator=frozen_validator,
+                )
+                for turn_index in (0, 1)
+                for policy_id in _SCIENTIFIC_POLICY_IDS
+            ),
+            key=lambda item: item.condition_id,
+        )
+    )
+
+
 def _run_manifest(
     *,
     identity: ProviderIdentity | None = None,
@@ -132,6 +171,9 @@ def _run_manifest(
     decision_rule_version: str = CONFIRMATORY_DECISION_RULE_VERSION,
     run_tier: str = "confirmatory",
     preregistration_sha256: str | None = None,
+    prompt_family: str = "family-a",
+    prompt_features: PromptFeatures | None = None,
+    validator: ValidatorSpec | None = None,
 ) -> RunManifest:
     if identity is None or effective_json is None:
         identity, effective_json = _llama_identity_and_effective_json()
@@ -140,11 +182,18 @@ def _run_manifest(
     scientific_identity_sha256 = canonical_sha256("confirmatory-plan")
     dataset_sha256 = canonical_sha256("confirmatory-dataset")
     dataset_seal_sha256 = canonical_sha256("confirmatory-dataset-seal")
+    turn_inputs = _turn_inputs(
+        identity,
+        prompt_family=prompt_family,
+        prompt_features=prompt_features,
+        validator=validator,
+    )
+    turn_input_evidence_sha256 = canonical_sha256(turn_inputs)
     confirmatory_contract_sha256 = None
     if run_tier == "confirmatory":
         assert preregistration_sha256 is not None
         spec = _confirmatory_spec()
-        prompt_family_by_sequence = {"sequence-a": "family-a"}
+        prompt_family_by_sequence = {"sequence-a": prompt_family}
         confirmatory_contract_sha256 = confirmatory_analysis_contract_sha256(
             scientific_identity_sha256=scientific_identity_sha256,
             preregistration_sha256=preregistration_sha256,
@@ -152,19 +201,13 @@ def _run_manifest(
             confirmatory_analysis_spec_sha256=canonical_sha256(spec),
             evaluation_spec=_evaluation_spec(),
             evaluation_spec_sha256=canonical_sha256(_evaluation_spec()),
+            turn_input_evidence_sha256=turn_input_evidence_sha256,
             prompt_family_by_sequence=prompt_family_by_sequence,
             prompt_family_design_sha256=canonical_sha256(prompt_family_by_sequence),
             dataset_sha256=dataset_sha256,
             dataset_purpose=DatasetPurpose.EVALUATION,
             dataset_seal_sha256=dataset_seal_sha256,
         )
-    policy_ids = (
-        "best_static",
-        "heuristic_adaptive",
-        "neural_matched_history_state_reset",
-        "neural_persistent",
-        "random_matched",
-    )
     return RunManifest(
         source_commit="0" * 40,
         working_tree_clean=True,
@@ -174,7 +217,8 @@ def _run_manifest(
         provider_identity=identity,
         provider_effective_configuration_json=effective_json,
         policy_config_hashes={
-            policy_id: canonical_sha256({"policy_id": policy_id}) for policy_id in policy_ids
+            policy_id: canonical_sha256({"policy_id": policy_id})
+            for policy_id in _SCIENTIFIC_POLICY_IDS
         },
         matched_history_policy_sources={"neural_matched_history_state_reset": "neural_persistent"},
         metric_versions={"test-metrics": "1.0.0"},
@@ -184,6 +228,9 @@ def _run_manifest(
         database_schema_version=CURRENT_SCHEMA_VERSION,
         evaluation_spec_json=canonical_json(_evaluation_spec()),
         evaluation_spec_sha256=canonical_sha256(_evaluation_spec()),
+        turn_input_evidence_sha256=(
+            turn_input_evidence_sha256 if run_tier == "confirmatory" else None
+        ),
         run_tier=run_tier,
         scientific_identity_sha256=scientific_identity_sha256,
         preregistration_sha256=preregistration_sha256,
@@ -579,18 +626,17 @@ def _complete_llama_requests(
     identity: ProviderIdentity,
     *,
     prompt_family: str | None = "family-a",
+    prompt_features: PromptFeatures | None = None,
+    validator: ValidatorSpec | None = None,
+    metric_validator: ValidatorSpec | None = None,
 ) -> tuple[str, ...]:
     condition_ids: list[str] = []
-    policy_ids = (
-        "best_static",
-        "heuristic_adaptive",
-        "neural_matched_history_state_reset",
-        "neural_persistent",
-        "random_matched",
-    )
+    features = prompt_features or PromptFeatures({})
+    frozen_validator = validator or ValidatorSpec(kind="non_empty")
+    frozen_metric_validator = metric_validator or frozen_validator
     previous_condition_ids: dict[str, str] = {}
     for turn_index in (0, 1):
-        for policy_id in policy_ids:
+        for policy_id in _SCIENTIFIC_POLICY_IDS:
             request = make_request(identity, policy_id=policy_id, turn_index=turn_index)
             history = None
             if turn_index > 0:
@@ -607,20 +653,32 @@ def _complete_llama_requests(
                     condition_id=request.condition_id,
                     prompt_case_id=f"case-{turn_index}",
                     prompt_family=prompt_family,
-                    prompt_features=PromptFeatures({}),
-                    validator=ValidatorSpec(kind="non_empty"),
+                    prompt_features=features,
+                    validator=frozen_validator,
                 )
             )
             store.prepare_turn(request, history, input_evidence)
             store.begin_dispatch(request.condition_id)
             response = GenerationResponse(
-                text="deterministic stored response",
+                text="one two three four five six seven eight",
                 provider_identity=identity,
                 effective_parameters=request.decoding_parameters,
                 raw_metadata=GenerationMetadata(request_sha256=canonical_sha256(request)),
             )
             store.persist_response(request.condition_id, response)
-            store.persist_metrics(request.condition_id, make_metrics(response))
+            metric_prompt_family = prompt_family or "family-a"
+            store.persist_metrics(
+                request.condition_id,
+                compute_response_metrics(
+                    MetricContext(
+                        prompt_case_id=f"case-{turn_index}",
+                        prompt_family=metric_prompt_family,
+                        prompt=request.prompt,
+                        response_text=response.text,
+                        validator=frozen_metric_validator,
+                    )
+                ),
+            )
             policy_trace = make_trace(request)
             store.commit_turn(
                 request.condition_id,
@@ -741,7 +799,7 @@ def test_scientific_analysis_is_atomic_typed_idempotent_and_reopenable(
     ("prompt_family", "message"),
     (
         (None, "exact prompt-side input evidence coverage"),
-        ("family-b", "prompt-family mapping"),
+        ("family-b", "frozen run identity"),
     ),
 )
 def test_scientific_analysis_requires_reconstructable_prompt_family_evidence(
@@ -768,6 +826,58 @@ def test_scientific_analysis_requires_reconstructable_prompt_family_evidence(
             store.persist_scientific_analysis(manifest, result, context=context)
 
         assert store.get_scientific_analysis() is None
+
+
+def test_scientific_analysis_rejects_prompt_features_outside_frozen_identity(
+    tmp_path: Path,
+) -> None:
+    run_manifest = _run_manifest()
+    with SQLiteRunStore(tmp_path / "run.sqlite3", run_manifest) as store:
+        condition_ids = _complete_llama_requests(
+            store,
+            run_manifest.provider_identity,
+            prompt_features=PromptFeatures({"unbound_feature": 1.0}),
+        )
+        run_finalization = store.finalize_run(
+            condition_ids,
+            scientific_result_sha256(store.list_turns()),
+            execution_accounting=_complete_accounting(len(condition_ids)),
+        )
+        result, context = _claim_bound_result(run_manifest, run_finalization)
+
+        with pytest.raises(StoreInvariantError, match="frozen run identity"):
+            store.persist_scientific_analysis(
+                _scientific_manifest(run_manifest, run_finalization, result),
+                result,
+                context=context,
+            )
+
+
+def test_scientific_analysis_recomputes_metrics_from_frozen_validator(
+    tmp_path: Path,
+) -> None:
+    validator = ValidatorSpec(kind="exact_match", expected_text="never matches")
+    run_manifest = _run_manifest(validator=validator)
+    with SQLiteRunStore(tmp_path / "run.sqlite3", run_manifest) as store:
+        condition_ids = _complete_llama_requests(
+            store,
+            run_manifest.provider_identity,
+            validator=validator,
+            metric_validator=ValidatorSpec(kind="non_empty"),
+        )
+        run_finalization = store.finalize_run(
+            condition_ids,
+            scientific_result_sha256(store.list_turns()),
+            execution_accounting=_complete_accounting(len(condition_ids)),
+        )
+        result, context = _claim_bound_result(run_manifest, run_finalization)
+
+        with pytest.raises(StoreInvariantError, match="metrics do not reconstruct"):
+            store.persist_scientific_analysis(
+                _scientific_manifest(run_manifest, run_finalization, result),
+                result,
+                context=context,
+            )
 
 
 def test_confirmatory_result_rejects_forged_positive_decision() -> None:

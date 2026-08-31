@@ -324,6 +324,7 @@ def build_run_manifest(
         raise ValueError("policy runtimes do not exactly cover the experiment plan")
     phase3_analysis_contract_sha256 = None
     confirmatory_analysis_contract_sha256 = None
+    turn_input_evidence_sha256 = None
     if plan.protocol is None and plan.evaluation is not None:
         from neurallm.experiments.analysis import build_phase3_analysis_contract_sha256
 
@@ -335,9 +336,11 @@ def build_run_manifest(
             )
         from neurallm.experiments.scientific_analysis import (
             build_confirmatory_analysis_contract_sha256,
+            build_confirmatory_turn_input_evidence_sha256,
         )
 
         confirmatory_analysis_contract_sha256 = build_confirmatory_analysis_contract_sha256(plan)
+        turn_input_evidence_sha256 = build_confirmatory_turn_input_evidence_sha256(plan)
     if (
         plan.protocol is not None
         and plan.protocol.run_tier is RunTier.CONFIRMATORY
@@ -372,6 +375,7 @@ def build_run_manifest(
         database_schema_version=plan.database_schema_version,
         evaluation_spec_json=(None if plan.evaluation is None else canonical_json(plan.evaluation)),
         evaluation_spec_sha256=plan.evaluation_spec_sha256,
+        turn_input_evidence_sha256=turn_input_evidence_sha256,
         phase3_analysis_contract_sha256=phase3_analysis_contract_sha256,
         run_tier=(None if plan.protocol is None else plan.protocol.run_tier.value),
         scientific_identity_sha256=(

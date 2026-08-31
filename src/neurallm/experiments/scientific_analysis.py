@@ -92,6 +92,7 @@ from neurallm.storage import (
     SQLiteRunStore,
     StoredTurn,
     StoreInvariantError,
+    TurnInputEvidence,
     scientific_result_sha256,
 )
 
@@ -186,6 +187,7 @@ def confirmatory_analysis_contract_sha256(
     confirmatory_analysis_spec_sha256: str,
     evaluation_spec: EvaluationSpec,
     evaluation_spec_sha256: str,
+    turn_input_evidence_sha256: str,
     prompt_family_by_sequence: Mapping[str, str],
     prompt_family_design_sha256: str,
     dataset_sha256: str,
@@ -222,6 +224,7 @@ def confirmatory_analysis_contract_sha256(
             "confirmatory_analysis_spec_sha256": confirmatory_analysis_spec_sha256,
             "evaluation_spec": evaluation_spec,
             "evaluation_spec_sha256": evaluation_spec_sha256,
+            "turn_input_evidence_sha256": turn_input_evidence_sha256,
             "prompt_family_by_sequence": dict(sorted(prompt_family_by_sequence.items())),
             "prompt_family_design_sha256": prompt_family_design_sha256,
             "dataset_sha256": dataset_sha256,
@@ -248,6 +251,7 @@ def build_confirmatory_analysis_contract_sha256(plan: ExperimentPlan) -> str:
         confirmatory_analysis_spec_sha256=canonical_sha256(spec),
         evaluation_spec=plan.evaluation,
         evaluation_spec_sha256=plan.evaluation_spec_sha256,
+        turn_input_evidence_sha256=build_confirmatory_turn_input_evidence_sha256(plan),
         prompt_family_by_sequence=prompt_family_by_sequence,
         prompt_family_design_sha256=canonical_sha256(prompt_family_by_sequence),
         dataset_sha256=plan.dataset_hash,
@@ -284,6 +288,8 @@ def _validate_manifest(plan: ExperimentPlan, manifest: RunManifest) -> None:
         or manifest.run_tier != RunTier.CONFIRMATORY.value
         or manifest.scientific_identity_sha256 != plan.scientific_identity_sha256
         or manifest.preregistration_sha256 != plan.preregistration.seal_sha256
+        or manifest.turn_input_evidence_sha256
+        != build_confirmatory_turn_input_evidence_sha256(plan)
         or manifest.confirmatory_analysis_contract_sha256
         != build_confirmatory_analysis_contract_sha256(plan)
         or manifest.phase3_analysis_contract_sha256 is not None
@@ -696,6 +702,28 @@ def _prompt_family_by_sequence(plan: ExperimentPlan) -> dict[str, str]:
     if any(len(values) != 1 for values in families.values()):
         raise ValueError("prompt_family subgroup requires one family per sequence unit")
     return {sequence_id: next(iter(values)) for sequence_id, values in families.items()}
+
+
+def build_confirmatory_turn_input_evidence_sha256(plan: ExperimentPlan) -> str:
+    """Hash every frozen prompt-side input for independent durable reconstruction."""
+
+    _require_confirmatory_plan(plan)
+    evidence = tuple(
+        sorted(
+            (
+                TurnInputEvidence(
+                    condition_id=turn.condition.condition_id,
+                    prompt_case_id=turn.prompt_case_id,
+                    prompt_family=turn.prompt_family,
+                    prompt_features=turn.prompt_features,
+                    validator=turn.validator,
+                )
+                for turn in plan.turns
+            ),
+            key=lambda item: item.condition_id,
+        )
+    )
+    return canonical_sha256(evidence)
 
 
 def _subgroup_limitations(
@@ -1131,5 +1159,6 @@ __all__ = [
     "analyze_closed_confirmatory_run",
     "analyze_confirmatory_records",
     "build_confirmatory_analysis_contract_sha256",
+    "build_confirmatory_turn_input_evidence_sha256",
     "confirmatory_analysis_contract_sha256",
 ]

@@ -1012,6 +1012,9 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
     assert plan.evaluation is not None
     assert plan.evaluation_spec_sha256 is not None
     spec_hash = canonical_sha256(plan.confirmatory_analysis)
+    turn_input_evidence_sha256 = scientific_analysis.build_confirmatory_turn_input_evidence_sha256(
+        plan
+    )
     prompt_family_by_sequence = scientific_analysis._prompt_family_by_sequence(plan)
     prompt_family_design_sha256 = canonical_sha256(prompt_family_by_sequence)
 
@@ -1022,6 +1025,7 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
         confirmatory_analysis_spec_sha256=spec_hash,
         evaluation_spec=plan.evaluation,
         evaluation_spec_sha256=plan.evaluation_spec_sha256,
+        turn_input_evidence_sha256=turn_input_evidence_sha256,
         prompt_family_by_sequence=prompt_family_by_sequence,
         prompt_family_design_sha256=prompt_family_design_sha256,
         dataset_sha256=plan.dataset_hash,
@@ -1038,6 +1042,7 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
             confirmatory_analysis_spec_sha256="f" * 64,
             evaluation_spec=plan.evaluation,
             evaluation_spec_sha256=plan.evaluation_spec_sha256,
+            turn_input_evidence_sha256=turn_input_evidence_sha256,
             prompt_family_by_sequence=prompt_family_by_sequence,
             prompt_family_design_sha256=prompt_family_design_sha256,
             dataset_sha256=plan.dataset_hash,
@@ -1053,6 +1058,7 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
             confirmatory_analysis_spec_sha256=spec_hash,
             evaluation_spec=drifted_evaluation,
             evaluation_spec_sha256=plan.evaluation_spec_sha256,
+            turn_input_evidence_sha256=turn_input_evidence_sha256,
             prompt_family_by_sequence=prompt_family_by_sequence,
             prompt_family_design_sha256=prompt_family_design_sha256,
             dataset_sha256=plan.dataset_hash,
@@ -1086,6 +1092,7 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
             confirmatory_analysis_spec_sha256=spec_hash,
             evaluation_spec=plan.evaluation,
             evaluation_spec_sha256=plan.evaluation_spec_sha256,
+            turn_input_evidence_sha256=turn_input_evidence_sha256,
             prompt_family_by_sequence=prompt_family_by_sequence,
             prompt_family_design_sha256=prompt_family_design_sha256,
             dataset_sha256=plan.dataset_hash,

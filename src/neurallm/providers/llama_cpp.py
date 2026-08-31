@@ -276,6 +276,7 @@ def require_llama_cpp_provider_binding(
 
 
 _ModelArtifactFingerprint = tuple[int, int, int, int, int]
+_MODEL_ARTIFACT_PROBE_BYTES = 1024 * 1024
 
 
 def _artifact_fingerprint(stat_result: os.stat_result) -> _ModelArtifactFingerprint:
@@ -288,7 +289,18 @@ def _artifact_fingerprint(stat_result: os.stat_result) -> _ModelArtifactFingerpr
     )
 
 
-def _measure_model_artifact(model_path: str) -> tuple[str, _ModelArtifactFingerprint]:
+def _artifact_probe_sha256(size: int, first: bytes, last: bytes) -> str:
+    digest = sha256()
+    digest.update(b"llama-cpp-model-probe-v1\0")
+    digest.update(size.to_bytes(16, "big"))
+    digest.update(first)
+    digest.update(last)
+    return digest.hexdigest()
+
+
+def _measure_model_artifact(
+    model_path: str,
+) -> tuple[str, _ModelArtifactFingerprint, str]:
     path = Path(model_path)
     if not path.is_absolute():
         raise LlamaCppIdentityDriftError(
@@ -307,8 +319,13 @@ def _measure_model_artifact(model_path: str) -> tuple[str, _ModelArtifactFingerp
                 )
             before = _artifact_fingerprint(before_stat)
             digest = sha256()
+            first = b""
+            last = b""
             for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
                 digest.update(chunk)
+                if len(first) < _MODEL_ARTIFACT_PROBE_BYTES:
+                    first += chunk[: _MODEL_ARTIFACT_PROBE_BYTES - len(first)]
+                last = (last + chunk)[-_MODEL_ARTIFACT_PROBE_BYTES:]
             after = _artifact_fingerprint(os.fstat(artifact.fileno()))
         current = _artifact_fingerprint(path.stat())
     except (OSError, ValueError) as error:
@@ -317,7 +334,26 @@ def _measure_model_artifact(model_path: str) -> tuple[str, _ModelArtifactFingerp
         ) from error
     if before[:4] != after[:4] or after[:4] != current[:4]:
         raise LlamaCppIdentityDriftError("model artifact changed while its digest was measured")
-    return digest.hexdigest(), current
+    return digest.hexdigest(), current, _artifact_probe_sha256(before[2], first, last)
+
+
+def _probe_model_artifact(model_path: str) -> tuple[str, _ModelArtifactFingerprint]:
+    path = Path(model_path)
+    try:
+        with path.open("rb") as artifact:
+            before = _artifact_fingerprint(os.fstat(artifact.fileno()))
+            first = artifact.read(_MODEL_ARTIFACT_PROBE_BYTES)
+            artifact.seek(max(0, before[2] - _MODEL_ARTIFACT_PROBE_BYTES))
+            last = artifact.read(_MODEL_ARTIFACT_PROBE_BYTES)
+            after = _artifact_fingerprint(os.fstat(artifact.fileno()))
+        current = _artifact_fingerprint(path.stat())
+    except (OSError, ValueError) as error:
+        raise LlamaCppIdentityDriftError(
+            "model artifact is unavailable before completion dispatch"
+        ) from error
+    if before[:4] != after[:4] or after[:4] != current[:4]:
+        raise LlamaCppIdentityDriftError("model artifact changed during its dispatch probe")
+    return _artifact_probe_sha256(before[2], first, last), current
 
 
 class LlamaCppProvider:
@@ -335,6 +371,7 @@ class LlamaCppProvider:
         "_effective_configuration",
         "_last_raw_response_sha256",
         "_model_artifact_fingerprint",
+        "_model_artifact_probe_sha256",
         "_provider_identity",
     )
 
@@ -354,7 +391,10 @@ class LlamaCppProvider:
         )
         self._last_raw_response_sha256: str | None = None
         try:
-            self._model_artifact_fingerprint = self._verify_model_artifact()
+            (
+                self._model_artifact_fingerprint,
+                self._model_artifact_probe_sha256,
+            ) = self._verify_model_artifact()
             effective_configuration = self._inspect_effective_configuration()
             provider_identity = llama_cpp_provider_identity(effective_configuration)
         except Exception:
@@ -390,7 +430,10 @@ class LlamaCppProvider:
     def verify_model_artifact(self) -> None:
         """Rehash the local model artifact and require the configured digest."""
 
-        self._model_artifact_fingerprint = self._verify_model_artifact()
+        (
+            self._model_artifact_fingerprint,
+            self._model_artifact_probe_sha256,
+        ) = self._verify_model_artifact()
 
     def close(self) -> None:
         """Close the owned synchronous HTTP client."""
@@ -548,22 +591,25 @@ class LlamaCppProvider:
             )
 
     def _require_stable_model_artifact(self) -> None:
-        try:
-            current = _artifact_fingerprint(Path(self._config.model_path).stat())
-        except OSError as error:
-            raise LlamaCppIdentityDriftError(
-                "model artifact is unavailable before completion dispatch"
-            ) from error
-        if current != self._model_artifact_fingerprint:
-            self._model_artifact_fingerprint = self._verify_model_artifact()
+        probe_sha256, current = _probe_model_artifact(self._config.model_path)
+        if (
+            current != self._model_artifact_fingerprint
+            or probe_sha256 != self._model_artifact_probe_sha256
+        ):
+            (
+                self._model_artifact_fingerprint,
+                self._model_artifact_probe_sha256,
+            ) = self._verify_model_artifact()
 
-    def _verify_model_artifact(self) -> _ModelArtifactFingerprint:
-        observed_sha256, fingerprint = _measure_model_artifact(self._config.model_path)
+    def _verify_model_artifact(self) -> tuple[_ModelArtifactFingerprint, str]:
+        observed_sha256, fingerprint, probe_sha256 = _measure_model_artifact(
+            self._config.model_path
+        )
         if observed_sha256 != self._config.model_sha256:
             raise LlamaCppIdentityDriftError(
                 "model artifact SHA-256 does not match explicit provider configuration"
             )
-        return fingerprint
+        return fingerprint, probe_sha256
 
     def _validate_completion(
         self,

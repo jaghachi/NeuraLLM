@@ -24,11 +24,12 @@ lowercase SHA-256 to equal `model_sha256`. It then performs these requests:
      finite-float `top_p`, integer `top_k`, finite-float `presence_penalty`,
      integer `n_predict`, and integer `seed`.
 
-Before every generation, the adapter cheaply compares the local artifact's
-device, file identity, size, and modification time with the values bound at
-construction. A changed fingerprint triggers a full digest remeasurement. This
-metadata check catches ordinary replacements but is not a cryptographic
-measurement of every byte at every dispatch. The adapter then repeats `/health`
+Before every generation, the adapter compares the local artifact's device,
+file identity, size, and modification time plus a bounded SHA-256 content probe
+over the first and last MiB with the values bound at construction. A changed
+fingerprint or probe triggers a full digest remeasurement. This catches ordinary
+replacements and rapid same-size rewrites but is not a cryptographic measurement
+of every byte of a large artifact at every dispatch. The adapter then repeats `/health`
 and `/props` and requires the complete effective configuration and derived
 identity to equal the values bound at construction. It then sends exactly one
 non-streaming
@@ -173,13 +174,13 @@ silently generating again.
 For confirmatory execution, the construction hash and the full hash immediately
 before scientific persistence/export are point-in-time measurements. A
 replacement between preflight and execution fails during construction, and an
-ordinary mid-run replacement changes the per-dispatch metadata fingerprint and
-triggers a full rehash. These checks are not continuous remote attestation: a
-transient same-size rewrite whose file identity and modification time are
-restored between checks is outside what the fingerprint can prove, and the final
-hash cannot retrospectively identify it. Claim-eligible use therefore assumes a
-trusted same-host operator (or equivalently trusted shared mount) who excludes
-that rewrite-and-restore behavior.
+ordinary mid-run replacement changes the per-dispatch metadata/content probe
+and triggers a full rehash. These checks are not continuous remote attestation:
+a transient rewrite confined to the unsampled middle of a large same-size file,
+with its metadata restored between checks, is outside what the probe can prove,
+and the final hash cannot retrospectively identify it. Claim-eligible use
+therefore assumes a trusted same-host operator (or equivalently trusted shared
+mount) who excludes that rewrite-and-restore behavior.
 
 ## Explicit live test
 

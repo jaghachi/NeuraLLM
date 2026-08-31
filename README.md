@@ -161,9 +161,12 @@ reanalyze path. A current claim requires a new v2 confirmatory workflow in a
 fresh run directory.
 
 The pre-execution run manifest carries the canonical `EvaluationSpec` JSON and
-its SHA-256. Scientific persistence uses that frozen threshold contract to
-recompute guardrail status and thresholds from committed traces and metrics;
-resealing an internally consistent but source-false decision is rejected.
+its SHA-256 plus a SHA-256 over every frozen `TurnInputEvidence` record.
+Scientific persistence requires exact prompt-side input coverage, reconstructs
+deterministic response metrics from those inputs and committed responses, and
+uses the frozen threshold contract to recompute guardrail status and thresholds
+from committed traces and metrics. Resealing an internally consistent but
+source-false decision is rejected.
 
 ## Install
 
@@ -227,11 +230,12 @@ contract.
 requires `--allow-live-provider`; omission fails before provider construction or
 HTTP. A claim-eligible confirmatory run must use digest-bound llama.cpp identity.
 Full artifact hashes at construction and immediately before scientific
-persistence/export are point-in-time measurements. The metadata fingerprint
-checked before each dispatch catches ordinary replacements and triggers a full
-rehash, but it is not cryptographic proof of the bytes at every dispatch. The
-claim boundary therefore assumes a trusted same-host operator who excludes a
-transient same-size rewrite whose identity and modification time are restored
+persistence/export are point-in-time measurements. Before each dispatch, the
+adapter checks metadata plus a bounded content probe over the first and last
+MiB; any change triggers a full rehash. This catches ordinary replacements and
+rapid same-size rewrites but is not cryptographic proof of every byte of a large
+artifact at every dispatch. The claim boundary therefore assumes a trusted
+same-host operator who excludes transient unsampled-middle rewrites restored
 between checks. After complete execution, the run is analyzed, atomically
 persisted, read back, and exported only when all frozen identity and integrity
 gates pass. The checked-in executable Phase 3,

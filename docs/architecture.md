@@ -420,11 +420,13 @@ cannot be overwritten or reanalyzed in place because their run manifest is
 also v1-bound. Replacement requires a new v2 confirmatory workflow in a fresh
 run directory.
 
-The v2 run manifest retains canonical `EvaluationSpec` JSON plus its SHA-256.
-At scientific persistence, SQLite reconstructs action/history evidence from
-committed traces, rebuilds coverage and pairwise guardrails under those frozen
-thresholds, and rejects any submitted guardrail status or threshold that does
-not match the source records.
+The v2 run manifest retains canonical `EvaluationSpec` JSON plus its SHA-256
+and the canonical SHA-256 of every frozen prompt-side `TurnInputEvidence`
+record. At scientific persistence, SQLite requires exact input coverage,
+recomputes deterministic response metrics from committed inputs and responses,
+reconstructs action/history evidence from committed traces, rebuilds coverage
+and pairwise guardrails under the frozen thresholds, and rejects any submitted
+metric, guardrail status, or threshold that does not match the source records.
 
 The three frozen run tiers have exact request-accounting schedules:
 

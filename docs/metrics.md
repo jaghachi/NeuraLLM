@@ -127,9 +127,12 @@ bound to the v1 rule, there is no supported in-place migration or offline
 reanalyze path; current evidence requires a new v2 confirmatory workflow in a
 fresh run directory.
 
-The run manifest freezes the canonical `EvaluationSpec` JSON and SHA-256.
-Persistence recomputes guardrail status and thresholds from committed action,
-history, and metric evidence under that spec before accepting the result.
+The run manifest freezes the canonical `EvaluationSpec` JSON and SHA-256 plus
+the hash of all condition-keyed `TurnInputEvidence`. Persistence requires exact
+input coverage, recomputes deterministic metrics from each committed input and
+response, and then recomputes guardrail status and thresholds from committed
+action, history, and metric evidence under that spec before accepting the
+result.
 
 ## Response-level provenance
 
