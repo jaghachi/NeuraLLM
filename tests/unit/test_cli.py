@@ -87,10 +87,11 @@ def test_preflight_uses_only_explicit_provider_config_and_emits_canonical_json(
     monkeypatch: Any,
     tmp_path: Path,
 ) -> None:
+    model_path = str((tmp_path / "explicit.gguf").resolve())
     provider_payload = {
         "base_url": "http://127.0.0.1:8080",
         "model_alias": "explicit-model",
-        "model_path": "C:/models/explicit.gguf",
+        "model_path": model_path,
         "model_sha256": "d" * 64,
         "build_id": "explicit-build",
         "chat_template_sha256": "a" * 64,
@@ -114,7 +115,7 @@ def test_preflight_uses_only_explicit_provider_config_and_emits_canonical_json(
             "model_alias": "explicit-model",
             "build_id": "explicit-build",
             "provider_config_hash": "b" * 64,
-            "model_path": "C:/models/explicit.gguf",
+            "model_path": model_path,
             "model_sha256": "d" * 64,
             "chat_template_sha256": "a" * 64,
         },
