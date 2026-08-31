@@ -8,6 +8,8 @@ from pydantic import TypeAdapter, ValidationError
 from neurallm.control import (
     BestStaticPolicySpec,
     HeuristicAdaptivePolicySpec,
+    NeuralMatchedHistoryStateResetPolicySpec,
+    NeuralPersistentPolicySpec,
     PolicySpec,
     RandomMatchedPolicySpec,
 )
@@ -19,6 +21,11 @@ def test_policy_spec_union_is_discriminated_by_kind() -> None:
     assert adapter.validate_python({"kind": "best_static"}) == BestStaticPolicySpec()
     assert adapter.validate_python({"kind": "random_matched"}) == RandomMatchedPolicySpec()
     assert adapter.validate_python({"kind": "heuristic_adaptive"}) == HeuristicAdaptivePolicySpec()
+    assert adapter.validate_python({"kind": "neural_persistent"}) == (NeuralPersistentPolicySpec())
+    assert (
+        adapter.validate_python({"kind": "neural_matched_history_state_reset"})
+        == NeuralMatchedHistoryStateResetPolicySpec()
+    )
 
     with pytest.raises(ValidationError, match="union_tag_invalid"):
         adapter.validate_python({"kind": "unknown"})
@@ -46,6 +53,14 @@ def test_spec_defaults_bind_algorithm_state_and_history_contracts() -> None:
     assert heuristic.adherence_reaction_fraction == 0.50
     assert heuristic.length_reaction_fraction == 0.25
     assert heuristic.clean_decay_fraction == 0.50
+    persistent = NeuralPersistentPolicySpec()
+    reset = NeuralMatchedHistoryStateResetPolicySpec()
+    assert persistent.implementation_version == reset.implementation_version
+    assert persistent.state_schema_version == reset.state_schema_version
+    assert persistent.history_access == "own_previous_response"
+    assert reset.history_access == "matched_focal_previous_response"
+    assert reset.history_source_policy_id == persistent.policy_id
+    assert reset.state_intervention == "reset_substrate"
 
 
 def test_specs_are_strict_frozen_and_extra_forbid() -> None:

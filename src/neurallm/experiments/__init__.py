@@ -23,12 +23,14 @@ from neurallm.experiments.dataset import (
 from neurallm.experiments.plan import (
     PHASE2_DECISION_RULE_VERSION,
     PHASE3_DECISION_RULE_VERSION,
+    PHASE4_DECISION_RULE_VERSION,
     ExperimentPlan,
     PlannedTurn,
     build_plan,
 )
 from neurallm.experiments.runner import (
     AppliedPolicyTrace,
+    CausalAppliedPolicyTrace,
     DetailedAppliedPolicyTrace,
     ExecutionSummary,
     GitProvenance,
@@ -50,6 +52,7 @@ from neurallm.experiments.workflow import (
 __all__ = [
     "BaseDecodingProfile",
     "AppliedPolicyTrace",
+    "CausalAppliedPolicyTrace",
     "DetailedAppliedPolicyTrace",
     "DatasetReference",
     "ExperimentConfig",
@@ -62,6 +65,7 @@ __all__ = [
     "PolicyRuntime",
     "PHASE2_DECISION_RULE_VERSION",
     "PHASE3_DECISION_RULE_VERSION",
+    "PHASE4_DECISION_RULE_VERSION",
     "PreparedExperiment",
     "PromptCase",
     "PromptDataset",

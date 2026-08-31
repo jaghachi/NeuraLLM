@@ -156,9 +156,42 @@ def test_phase2_manifest_canonical_identity_omits_the_optional_phase3_contract()
     serialized = canonical_json(legacy)
 
     assert "phase3_analysis_contract_sha256" not in serialized
+    assert "matched_history_policy_sources" not in serialized
     restored = RunManifest.model_validate_json(serialized)
     assert restored.phase3_analysis_contract_sha256 is None
     assert canonical_sha256(restored) == canonical_sha256(legacy)
+
+
+def test_run_manifest_requires_the_exact_phase4_rule_and_matched_history_edge() -> None:
+    persistent = "neural_persistent"
+    reset = "neural_matched_history_state_reset"
+    base = make_manifest(FakeProvider().provider_identity).model_dump(mode="python")
+    base["policy_config_hashes"] = {
+        persistent: canonical_sha256(persistent),
+        reset: canonical_sha256(reset),
+    }
+    base["decision_rule_version"] = "phase4-neural-mechanism-only-v1"
+    base["matched_history_policy_sources"] = {reset: persistent}
+
+    phase4 = RunManifest.model_validate(base)
+
+    assert phase4.decision_rule_version == "phase4-neural-mechanism-only-v1"
+    assert dict(phase4.matched_history_policy_sources) == {reset: persistent}
+
+    rule_without_edge = dict(base)
+    rule_without_edge["matched_history_policy_sources"] = {}
+    with pytest.raises(ValueError, match="must appear together"):
+        RunManifest.model_validate(rule_without_edge)
+
+    edge_without_rule = dict(base)
+    edge_without_rule["decision_rule_version"] = "test-v1"
+    with pytest.raises(ValueError, match="must appear together"):
+        RunManifest.model_validate(edge_without_rule)
+
+    wrong_edge = dict(base)
+    wrong_edge["matched_history_policy_sources"] = {persistent: reset}
+    with pytest.raises(ValueError, match="only the Phase 4 matched-history policy edge"):
+        RunManifest.model_validate(wrong_edge)
 
 
 def test_plan_serialization_omits_only_absent_phase3_selection_evidence() -> None:

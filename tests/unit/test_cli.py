@@ -23,7 +23,7 @@ def test_status_is_machine_readable_and_truthful(capsys: Any) -> None:
         "phase_2_kernel_available": True,
         "phase_3_baseline_evaluator_available": True,
         "scientific_decision": None,
-        "version": "2.0.0a3",
+        "version": "2.0.0b1",
     }
 
 

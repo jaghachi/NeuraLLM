@@ -301,6 +301,48 @@ def test_policy_specs_are_unique_canonical_and_cannot_mix_with_legacy_ids() -> N
         ExperimentConfig.model_validate(mixed)
 
 
+@pytest.mark.parametrize(
+    ("policy_specs", "evaluation"),
+    [
+        (
+            [{"kind": "best_static"}, {"kind": "neural_persistent"}],
+            EvaluationSpec(
+                focal_policy_id="neural_persistent",
+                required_serious_comparator_ids=("best_static",),
+                bootstrap_seed=101,
+                permutation_seed=202,
+            ),
+        ),
+        (
+            [
+                {"kind": "best_static"},
+                {"kind": "neural_persistent"},
+                {"kind": "neural_matched_history_state_reset"},
+            ],
+            EvaluationSpec(
+                focal_policy_id="neural_matched_history_state_reset",
+                required_serious_comparator_ids=("best_static",),
+                negative_control_policy_ids=("neural_persistent",),
+                bootstrap_seed=101,
+                permutation_seed=202,
+            ),
+        ),
+    ],
+    ids=("persistent", "matched-history-reset"),
+)
+def test_phase3_config_rejects_neural_policies_with_an_evaluation_spec(
+    policy_specs: list[dict[str, str]],
+    evaluation: EvaluationSpec,
+) -> None:
+    dataset = PromptDataset.model_validate(_dataset_payload())
+    payload = _phase3_config_payload(dataset)
+    payload["policy_specs"] = policy_specs
+    payload["evaluation"] = evaluation
+
+    with pytest.raises(ValidationError, match="not admitted to Phase 3 efficacy evaluation"):
+        ExperimentConfig.model_validate(payload)
+
+
 def test_phase3_requires_matching_frozen_static_selection_evidence() -> None:
     dataset = PromptDataset.model_validate(_dataset_payload())
     payload = _phase3_config_payload(dataset)

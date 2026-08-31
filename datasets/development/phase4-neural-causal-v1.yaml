@@ -1,0 +1,34 @@
+schema_version: 1
+dataset_id: phase4-neural-causal
+version: phase4-neural-causal-v1
+purpose: development
+sequences:
+  - sequence_id: attribution-sequence
+    cases:
+      - case_id: attribution-0
+        prompt_family: transition
+        prompt: Return one deterministic response for the neural turn-zero control.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 64.0
+          transition_signal: -32.0
+        validator:
+          kind: non_empty
+      - case_id: attribution-1
+        prompt_family: transition
+        prompt: Return another deterministic response after the first committed metrics.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 64.0
+          transition_signal: 48.0
+        validator:
+          kind: non_empty
+      - case_id: attribution-2
+        prompt_family: transition
+        prompt: Return a third response while preserving the declared focal history source.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 64.0
+          transition_signal: -16.0
+        validator:
+          kind: non_empty

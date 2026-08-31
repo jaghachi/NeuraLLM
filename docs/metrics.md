@@ -5,8 +5,9 @@
 The current implementation computes deterministic response-level metrics and
 uses a strict subset of them in the Phase 3 paired baseline evaluator. Phase 3
 adds exact coverage, nested aggregation, deterministic paired statistics,
-guardrails, and a limited verdict skeleton. The checked-in fixtures use the fake
-provider and contain no neural policy.
+guardrails, and a limited verdict skeleton. The checked-in Phase 3 evaluator
+fixtures use the fake provider and contain no neural policy; the separate Phase
+4 causal harness does not enter this evaluator.
 
 These definitions do not establish live-provider validity, neural efficacy,
 model-backed efficacy, or persistent-state attribution. A Phase 3 verdict has

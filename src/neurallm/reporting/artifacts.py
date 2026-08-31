@@ -1,4 +1,4 @@
-"""Export compact deterministic views of canonical Phase 2 and Phase 3 stores."""
+"""Export compact deterministic views of canonical Phase 2 through Phase 4 stores."""
 
 from __future__ import annotations
 
@@ -10,9 +10,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from neurallm.domain.models import MetricValue, ResponseMetrics, RunManifest
+from neurallm.control.action_space import apply_action, normalized_action_magnitude
+from neurallm.control.neural import ActionDecoder, NeuralSubstrate, ObservationEncoder
+from neurallm.domain.models import (
+    ControllerObservation,
+    MetricValue,
+    ResponseMetrics,
+    RunManifest,
+)
 from neurallm.domain.serialization import canonical_json, canonical_sha256
-from neurallm.storage import SQLiteRunStore, StoredAnalysis, StoredTurn, TurnState
+from neurallm.storage import (
+    CURRENT_SCHEMA_VERSION,
+    SQLiteRunStore,
+    StoredAnalysis,
+    StoredTurn,
+    TurnInputEvidence,
+    TurnState,
+)
 
 CLOSED_RUN_ARTIFACTS = frozenset(
     {
@@ -87,6 +101,12 @@ _PHASE3_COMPARISON_FIELDS = (
     "guardrail_statuses",
     "status",
 )
+
+_PHASE3_DECISION_RULE_VERSION = "phase3-baseline-evaluator-v1"
+_PHASE4_DECISION_RULE_VERSION = "phase4-neural-mechanism-only-v1"
+_PHASE4_MATCHED_HISTORY_POLICY_SOURCES = {
+    "neural_matched_history_state_reset": "neural_persistent",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +231,326 @@ def _decision_payload(manifest: RunManifest, turns: tuple[StoredTurn, ...]) -> d
     }
 
 
+def _phase4_decision_payload(
+    manifest: RunManifest,
+    turns: tuple[StoredTurn, ...],
+) -> dict[str, object]:
+    """Return a mechanism-only Phase 4 result without an efficacy verdict."""
+
+    return {
+        "schema_version": 1,
+        "implementation_phase": 4,
+        "claim_scope": "deterministic_mechanism_validation_only",
+        "scientific_decision": None,
+        "comparison_status": "matched_history_attribution_mechanism_only",
+        "decision_rule_version": manifest.decision_rule_version,
+        "manifest_sha256": canonical_sha256(manifest),
+        "scientific_result_sha256": scientific_result_sha256(turns),
+        "provider_type": manifest.provider_identity.provider_type,
+        "committed_turns": len(turns),
+        "matched_history_policy_sources": dict(manifest.matched_history_policy_sources),
+        "database_integrity_verified": True,
+        "rationale": (
+            "Phase 4 records deterministic controller activity and matched-history "
+            "substrate-reset isolation only; it does not estimate neural efficacy, a "
+            "beneficial model-backed persistent-state effect, or a scientific outcome."
+        ),
+    }
+
+
+def _phase4_trajectory_key(turn: StoredTurn, policy_id: str) -> tuple[object, ...]:
+    condition = turn.condition
+    return (
+        condition.experiment_id,
+        condition.dataset_version,
+        condition.prompt_sequence_id,
+        policy_id,
+        condition.model_seed,
+        condition.controller_seed,
+        condition.provider_identity_id,
+        condition.base_decoding_profile_id,
+        condition.turn_index,
+    )
+
+
+def _phase4_base_trajectory_key(turn: StoredTurn) -> tuple[object, ...]:
+    condition = turn.condition
+    return (
+        condition.experiment_id,
+        condition.dataset_version,
+        condition.prompt_sequence_id,
+        condition.model_seed,
+        condition.controller_seed,
+        condition.provider_identity_id,
+        condition.base_decoding_profile_id,
+    )
+
+
+def _validate_phase4_mechanism_evidence(
+    manifest: RunManifest,
+    turns: tuple[StoredTurn, ...],
+    turn_inputs: tuple[TurnInputEvidence, ...],
+) -> None:
+    """Fail closed unless a Phase 4 store contains complete causal neural evidence."""
+
+    from neurallm.control.neural import NeuralPolicyState
+    from neurallm.experiments.runner import CausalAppliedPolicyTrace
+
+    persistent_id = "neural_persistent"
+    reset_id = "neural_matched_history_state_reset"
+    expected_policy_ids = {persistent_id, reset_id}
+    if manifest.database_schema_version != CURRENT_SCHEMA_VERSION:
+        raise ValueError("Phase 4 export requires the current database schema")
+    if set(manifest.policy_config_hashes) != expected_policy_ids:
+        raise ValueError("Phase 4 export requires exactly the persistent and reset policies")
+    if {turn.condition.policy_id for turn in turns} != expected_policy_ids:
+        raise ValueError("Phase 4 store must contain exactly the two neural policies")
+
+    input_by_condition_id = {evidence.condition_id: evidence for evidence in turn_inputs}
+    turn_condition_ids = {turn.condition_id for turn in turns}
+    if (
+        len(input_by_condition_id) != len(turn_inputs)
+        or set(input_by_condition_id) != turn_condition_ids
+    ):
+        raise ValueError("Phase 4 export requires exact prompt-side evidence coverage")
+
+    by_condition_id = {turn.condition_id: turn for turn in turns}
+    by_coordinate = {_phase4_trajectory_key(turn, turn.condition.policy_id): turn for turn in turns}
+    base_parameters_by_trajectory = {
+        _phase4_base_trajectory_key(turn): turn.request.decoding_parameters
+        for turn in turns
+        if turn.condition.policy_id == persistent_id and turn.condition.turn_index == 0
+    }
+    traces: dict[str, CausalAppliedPolicyTrace] = {}
+    later_reset_count = 0
+    any_later_activity = False
+    for turn in turns:
+        if (
+            turn.state is not TurnState.COMMITTED
+            or turn.response is None
+            or turn.metrics is None
+            or turn.policy_state_json is None
+            or turn.policy_trace_json is None
+            or turn.history_commitment_sha256 is None
+        ):
+            raise ValueError("Phase 4 turn lacks complete committed mechanism evidence")
+        trace = CausalAppliedPolicyTrace.model_validate_json(turn.policy_trace_json)
+        traces[turn.condition_id] = trace
+        input_evidence = input_by_condition_id[turn.condition_id]
+        if (
+            trace.policy_id != turn.condition.policy_id
+            or trace.turn_index != turn.condition.turn_index
+        ):
+            raise ValueError("Phase 4 trace identity does not match its stored condition")
+        if (
+            trace.policy_trace.policy_id != turn.condition.policy_id
+            or trace.policy_trace.turn_index != turn.condition.turn_index
+        ):
+            raise ValueError("Phase 4 nested neural trace has the wrong identity")
+        if trace.action_application.final_decoding_parameters != turn.request.decoding_parameters:
+            raise ValueError("Phase 4 trace decoding parameters do not match the stored request")
+        if trace.action != trace.action_application.step_clamped_action:
+            raise ValueError("Phase 4 applied trace does not bind its step-clamped action")
+        if trace.policy_trace.action != trace.action_application.raw_action:
+            raise ValueError("Phase 4 neural trace does not bind its raw controller action")
+        expected_access = (
+            "matched_focal_previous_response"
+            if turn.condition.policy_id == reset_id
+            else "own_previous_response"
+        )
+        if trace.history_access != expected_access:
+            raise ValueError("Phase 4 trace declares the wrong history-access mode")
+        state = NeuralPolicyState.model_validate_json(turn.policy_state_json)
+        if state.next_turn_index != turn.condition.turn_index + 1:
+            raise ValueError("Phase 4 stored neural state has the wrong logical turn")
+        if state.controller_seed != turn.condition.controller_seed:
+            raise ValueError("Phase 4 stored neural state has the wrong controller seed")
+        if state.action_bounds != manifest.action_bounds:
+            raise ValueError("Phase 4 stored neural state has the wrong action bounds")
+        if state.substrate != trace.policy_trace.substrate_transition.state_after:
+            raise ValueError("Phase 4 stored neural state does not match the traced transition")
+        expected_transition = NeuralSubstrate().step(
+            trace.policy_trace.effective_substrate_state,
+            trace.policy_trace.observation_encoding,
+            state.controller_seed,
+        )
+        if trace.policy_trace.substrate_transition != expected_transition:
+            raise ValueError("Phase 4 trace does not reproduce the neural substrate equations")
+        expected_magnitude = normalized_action_magnitude(
+            trace.policy_trace.action,
+            manifest.action_bounds,
+        )
+        if trace.policy_trace.action_magnitude != expected_magnitude:
+            raise ValueError("Phase 4 trace reports the wrong normalized action magnitude")
+        decoded = ActionDecoder().decode(
+            trace.policy_trace.substrate_transition.state_after,
+            manifest.action_bounds,
+            action_enabled=turn.condition.turn_index > 0,
+        )
+        if (
+            trace.policy_trace.decoder_activation != decoded.activation
+            or trace.policy_trace.action != decoded.action
+            or trace.policy_trace.action_magnitude != decoded.action_magnitude
+        ):
+            raise ValueError("Phase 4 trace does not reproduce the declared action decoder")
+        base_parameters = base_parameters_by_trajectory.get(_phase4_base_trajectory_key(turn))
+        if base_parameters is None:
+            raise ValueError("Phase 4 trajectory lacks its persistent turn-zero base")
+        expected_application = apply_action(
+            base_parameters,
+            decoded.action,
+            manifest.action_bounds,
+            manifest.decoding_bounds,
+        )
+        if trace.action_application != expected_application:
+            raise ValueError("Phase 4 trace does not reproduce the declared action application")
+        if turn.condition.turn_index == 0:
+            if turn.history is not None or trace.observation_has_previous_response:
+                raise ValueError("Phase 4 turn zero must carry explicit null history")
+            expected_initial_state = NeuralSubstrate().initial_state(turn.condition.controller_seed)
+            if (
+                trace.policy_trace.state_reset_applied
+                or trace.policy_trace.stored_substrate_state != expected_initial_state
+                or trace.policy_trace.effective_substrate_state
+                != trace.policy_trace.stored_substrate_state
+            ):
+                raise ValueError("Phase 4 turn zero does not use the declared initial state")
+            expected_encoding = ObservationEncoder().encode(
+                ControllerObservation(
+                    turn_index=0,
+                    prompt_family=input_evidence.prompt_family,
+                    current_prompt_features=input_evidence.prompt_features,
+                    previous_response_metrics=None,
+                    has_previous_response=False,
+                )
+            )
+            if trace.policy_trace.observation_encoding != expected_encoding:
+                raise ValueError("Phase 4 trace does not match its prompt-side evidence")
+            continue
+
+        any_later_activity |= trace.policy_trace.action_magnitude > 0.0
+        if turn.condition.policy_id == reset_id:
+            later_reset_count += 1
+        if turn.history is None:
+            raise ValueError("Phase 4 later turn lacks its focal history binding")
+        previous = by_condition_id.get(turn.history.previous_condition_id)
+        if (
+            previous is None
+            or previous.metrics is None
+            or previous.policy_state_json is None
+            or previous.history_commitment_sha256 is None
+        ):
+            raise ValueError("Phase 4 history source lacks complete committed evidence")
+        if (
+            previous.condition.policy_id != persistent_id
+            or previous.condition.turn_index != turn.condition.turn_index - 1
+        ):
+            raise ValueError("Phase 4 history does not bind the focal prior turn")
+        if (
+            trace.history_source_policy_id != persistent_id
+            or trace.history_source_condition_id != previous.condition_id
+            or trace.history_commitment_sha256 != previous.history_commitment_sha256
+            or trace.observation_metrics_sha256 != canonical_sha256(previous.metrics)
+        ):
+            raise ValueError("Phase 4 causal trace does not match its committed focal history")
+        previous_state = NeuralPolicyState.model_validate_json(previous.policy_state_json)
+        if trace.policy_trace.stored_substrate_state != previous_state.substrate:
+            raise ValueError("Phase 4 trace did not load the committed focal substrate")
+        expected_encoding = ObservationEncoder().encode(
+            ControllerObservation(
+                turn_index=turn.condition.turn_index,
+                prompt_family=input_evidence.prompt_family,
+                current_prompt_features=input_evidence.prompt_features,
+                previous_response_metrics=previous.metrics,
+                has_previous_response=True,
+            )
+        )
+        if trace.policy_trace.observation_encoding != expected_encoding:
+            raise ValueError("Phase 4 trace does not match its prompt-side evidence")
+
+    if later_reset_count == 0 or not any_later_activity:
+        raise ValueError("Phase 4 export requires later reset evidence and controller activity")
+
+    persistent_coordinates = {
+        _phase4_trajectory_key(turn, persistent_id)
+        for turn in turns
+        if turn.condition.policy_id == persistent_id
+    }
+    reset_coordinates = {
+        _phase4_trajectory_key(turn, persistent_id)
+        for turn in turns
+        if turn.condition.policy_id == reset_id
+    }
+    if persistent_coordinates != reset_coordinates:
+        raise ValueError("Phase 4 attribution arms lack exact paired coverage")
+
+    substrate = NeuralSubstrate()
+    any_later_mechanism_divergence = False
+    for reset_turn in (turn for turn in turns if turn.condition.policy_id == reset_id):
+        persistent_turn = by_coordinate.get(_phase4_trajectory_key(reset_turn, persistent_id))
+        if persistent_turn is None:
+            raise ValueError("Phase 4 reset turn lacks its paired focal current turn")
+        persistent_response = persistent_turn.response
+        reset_response = reset_turn.response
+        if persistent_response is None or reset_response is None:
+            raise ValueError("Phase 4 attribution pair lacks committed responses")
+        persistent_trace = traces[persistent_turn.condition_id]
+        reset_trace = traces[reset_turn.condition_id]
+        if persistent_turn.request.prompt != reset_turn.request.prompt:
+            raise ValueError("Phase 4 attribution pair has mismatched current prompts")
+        persistent_input = input_by_condition_id[persistent_turn.condition_id]
+        reset_input = input_by_condition_id[reset_turn.condition_id]
+        if (
+            persistent_input.prompt_case_id != reset_input.prompt_case_id
+            or persistent_input.prompt_family != reset_input.prompt_family
+            or persistent_input.prompt_features != reset_input.prompt_features
+            or persistent_input.validator != reset_input.validator
+        ):
+            raise ValueError("Phase 4 attribution pair has mismatched prompt-side evidence")
+        if reset_turn.condition.turn_index == 0:
+            if (
+                persistent_turn.request.decoding_parameters
+                != reset_turn.request.decoding_parameters
+                or persistent_response.text != reset_response.text
+                or persistent_response.effective_parameters != reset_response.effective_parameters
+                or persistent_response.provider_identity != reset_response.provider_identity
+                or persistent_turn.policy_state_json != reset_turn.policy_state_json
+                or persistent_trace.policy_trace.mechanism_sha256
+                != reset_trace.policy_trace.mechanism_sha256
+            ):
+                raise ValueError("Phase 4 attribution arms are not equivalent at turn zero")
+            continue
+        if (
+            persistent_turn.history != reset_turn.history
+            or persistent_trace.policy_trace.observation_encoding
+            != reset_trace.policy_trace.observation_encoding
+            or persistent_trace.policy_trace.stored_substrate_state
+            != reset_trace.policy_trace.stored_substrate_state
+        ):
+            raise ValueError("Phase 4 attribution arms do not share exact focal inputs")
+        if (
+            persistent_trace.policy_trace.state_reset_applied
+            or persistent_trace.policy_trace.effective_substrate_state
+            != persistent_trace.policy_trace.stored_substrate_state
+        ):
+            raise ValueError("Phase 4 persistent arm contains an undeclared intervention")
+        if (
+            not reset_trace.policy_trace.state_reset_applied
+            or reset_trace.policy_trace.effective_substrate_state
+            != substrate.initial_state(reset_turn.condition.controller_seed)
+        ):
+            raise ValueError("Phase 4 reset arm did not apply the declared substrate reset")
+        any_later_mechanism_divergence |= (
+            persistent_trace.policy_trace.effective_substrate_state
+            != reset_trace.policy_trace.effective_substrate_state
+            or persistent_trace.policy_trace.action != reset_trace.policy_trace.action
+            or persistent_turn.request.decoding_parameters != reset_turn.request.decoding_parameters
+        )
+
+    if not any_later_mechanism_divergence:
+        raise ValueError("Phase 4 export requires a later paired mechanism divergence")
+
+
 def _phase3_comparison_rows(analysis: StoredAnalysis) -> tuple[dict[str, object], ...]:
     focal_policy_id = analysis.manifest.evaluation_spec.focal_policy_id
     return tuple(
@@ -303,6 +643,35 @@ def _report_text(manifest: RunManifest, turns: tuple[StoredTurn, ...]) -> str:
         "`comparisons.csv` is intentionally empty because serious comparators and statistical "
         "evaluation begin in Phase 3. The canonical response and metric evidence remains in "
         "`run.sqlite3`; the other files are deterministic derived views.\n"
+    )
+
+
+def _phase4_report_text(manifest: RunManifest, turns: tuple[StoredTurn, ...]) -> str:
+    source_policy = _PHASE4_MATCHED_HISTORY_POLICY_SOURCES["neural_matched_history_state_reset"]
+    provider_phrase = (
+        "under the deterministic fake provider"
+        if manifest.provider_identity.provider_type == "fake"
+        else f"under the declared `{manifest.provider_identity.provider_type}` provider"
+    )
+    return (
+        "# NeuraLLM Phase 4 Deterministic Mechanism Report\n\n"
+        "This closed run records neural-controller activity and a causally matched "
+        f"substrate-reset intervention {provider_phrase}. It does not establish neural "
+        "efficacy, a beneficial model-backed persistent-state effect, or a scientific "
+        "decision.\n\n"
+        f"- Manifest SHA-256: `{canonical_sha256(manifest)}`\n"
+        f"- Scientific result SHA-256: `{scientific_result_sha256(turns)}`\n"
+        f"- Provider type: `{manifest.provider_identity.provider_type}`\n"
+        f"- Provider identity: `{manifest.provider_identity.identity_id}`\n"
+        f"- Committed turns: `{len(turns)}`\n"
+        f"- Database schema version: `{manifest.database_schema_version}`\n"
+        f"- Decision rule: `{manifest.decision_rule_version}`\n"
+        "- Matched-history edge: "
+        f"`neural_matched_history_state_reset -> {source_policy}`\n\n"
+        "`comparisons.csv` is intentionally header-only because this is a mechanism-level "
+        "attribution control, not an efficacy or statistical comparison. Exact requests, "
+        "responses, metrics, serialized neural states, causal traces, and commitment hashes "
+        "remain in `run.sqlite3`; the other files are deterministic derived views.\n"
     )
 
 
@@ -444,25 +813,52 @@ def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
                 "finalized scientific result hash does not match the recomputed output"
             )
         analysis = store.get_analysis()
-        if manifest.decision_rule_version == "phase3-baseline-evaluator-v1":
+        if manifest.decision_rule_version == _PHASE3_DECISION_RULE_VERSION:
             if analysis is None:
                 raise ValueError("Phase 3 run is missing finalized analysis evidence")
+            if manifest.matched_history_policy_sources:
+                raise ValueError("Phase 3 run cannot declare matched-history policy sources")
+        elif manifest.decision_rule_version == _PHASE4_DECISION_RULE_VERSION:
+            if analysis is not None:
+                raise ValueError("Phase 4 mechanism run cannot contain Phase 3 analysis")
+            if (
+                dict(manifest.matched_history_policy_sources)
+                != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES
+            ):
+                raise ValueError("Phase 4 run lacks its exact matched-history policy edge")
+            _validate_phase4_mechanism_evidence(
+                manifest,
+                turns,
+                store.list_turn_inputs(),
+            )
         elif analysis is not None:
             raise ValueError("pre-Phase 3 run unexpectedly contains analysis evidence")
+        elif manifest.matched_history_policy_sources:
+            raise ValueError("pre-Phase 4 run unexpectedly declares matched-history policy sources")
         store.compact()
 
     result_rows = tuple(_result_row(turn) for turn in turns)
     comparison_fields: tuple[str, ...]
-    if analysis is None:
+    comparison_rows: tuple[dict[str, object], ...]
+    implementation_phase: int
+    if manifest.decision_rule_version == _PHASE4_DECISION_RULE_VERSION:
         comparison_fields = _PHASE2_COMPARISON_FIELDS
-        comparison_rows: tuple[dict[str, object], ...] = ()
+        comparison_rows = ()
+        decision = _phase4_decision_payload(manifest, turns)
+        report = _phase4_report_text(manifest, turns)
+        implementation_phase = 4
+    elif analysis is None:
+        comparison_fields = _PHASE2_COMPARISON_FIELDS
+        comparison_rows = ()
         decision = _decision_payload(manifest, turns)
         report = _report_text(manifest, turns)
+        implementation_phase = 2
     else:
         comparison_fields = _PHASE3_COMPARISON_FIELDS
         comparison_rows = _phase3_comparison_rows(analysis)
         decision = _phase3_decision_payload(manifest, turns, analysis)
         report = _phase3_report_text(manifest, turns, analysis)
+        implementation_phase = 3
     _write_atomic(output_directory / "manifest.json", canonical_json(manifest) + "\n")
     _write_atomic(output_directory / "results.csv", _csv_text(_RESULT_FIELDS, result_rows))
     _write_atomic(
@@ -478,7 +874,7 @@ def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
         scientific_result_sha256=result_sha256,
         committed_turns=len(turns),
         artifact_names=tuple(sorted(CLOSED_RUN_ARTIFACTS)),
-        implementation_phase=2 if analysis is None else 3,
+        implementation_phase=implementation_phase,
         phase3_baseline_evaluator_verdict=(
             None if analysis is None else analysis.result.verdict.value
         ),

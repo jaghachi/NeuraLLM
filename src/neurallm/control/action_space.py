@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import sqrt
+
 from pydantic import BaseModel, ConfigDict
 
 from neurallm.domain.models import (
@@ -161,9 +163,38 @@ def apply_action(
     )
 
 
+def normalized_action_magnitude(
+    action: ControllerAction,
+    bounds: ActionBounds,
+) -> float:
+    """Return RMS action magnitude normalized to the declared run bounds."""
+
+    if not isinstance(action, ControllerAction):
+        raise TypeError("action must be a ControllerAction")
+    if not isinstance(bounds, ActionBounds):
+        raise TypeError("bounds must be ActionBounds")
+    components = (
+        (float(action.temperature_delta), bounds.temperature_delta),
+        (float(action.top_p_delta), bounds.top_p_delta),
+        (float(action.top_k_delta), bounds.top_k_delta),
+        (float(action.presence_penalty_delta), bounds.presence_penalty_delta),
+    )
+    normalized: list[float] = []
+    for value, interval in components:
+        scale = max(abs(float(interval[0])), abs(float(interval[1])))
+        if scale == 0.0:
+            if value != 0.0:
+                raise ValueError("nonzero action uses a zero-width configured bound")
+            normalized.append(0.0)
+        else:
+            normalized.append(value / scale)
+    return sqrt(sum(value * value for value in normalized) / len(normalized))
+
+
 __all__ = [
     "ActionApplication",
     "ActionSaturation",
     "SaturationIndicator",
     "apply_action",
+    "normalized_action_magnitude",
 ]

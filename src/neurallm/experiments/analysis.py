@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from math import sqrt
 from pathlib import Path
 
-from neurallm.control.action_space import ActionApplication
+from neurallm.control.action_space import (
+    ActionApplication,
+    normalized_action_magnitude,
+)
 from neurallm.domain.models import ActionBounds, ControllerAction, RunManifest
 from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.evaluation import (
@@ -33,22 +35,10 @@ from neurallm.storage import (
 def _normalized_action_magnitude(action: ControllerAction, bounds: ActionBounds) -> float:
     """Return RMS action magnitude after normalizing each declared control dimension."""
 
-    components = (
-        (float(action.temperature_delta), bounds.temperature_delta),
-        (float(action.top_p_delta), bounds.top_p_delta),
-        (float(action.top_k_delta), bounds.top_k_delta),
-        (float(action.presence_penalty_delta), bounds.presence_penalty_delta),
-    )
-    normalized: list[float] = []
-    for value, interval in components:
-        scale = max(abs(float(interval[0])), abs(float(interval[1])))
-        if scale == 0.0:
-            if value != 0.0:
-                raise StoreInvariantError("nonzero action uses a zero-width configured bound")
-            normalized.append(0.0)
-        else:
-            normalized.append(value / scale)
-    return sqrt(sum(value * value for value in normalized) / len(normalized))
+    try:
+        return normalized_action_magnitude(action, bounds)
+    except ValueError as exc:
+        raise StoreInvariantError(str(exc)) from exc
 
 
 def _trace_evidence(
@@ -188,6 +178,7 @@ def _validate_plan_manifest(plan: ExperimentPlan, manifest: RunManifest) -> None
         or manifest.decision_rule_version != PHASE3_DECISION_RULE_VERSION
         or manifest.database_schema_version != plan.database_schema_version
         or set(manifest.policy_config_hashes) != expected_policy_ids
+        or bool(manifest.matched_history_policy_sources)
         or manifest.seed_schedule.model_seeds != expected_model_seeds
         or manifest.seed_schedule.controller_seeds != expected_controller_seeds
         or manifest.phase3_analysis_contract_sha256 != build_phase3_analysis_contract_sha256(plan)
