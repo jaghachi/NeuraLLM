@@ -28,7 +28,7 @@ provider:
     build_id: PASTE_PREFLIGHT_BUILD_ID
     provider_config_hash: 0000000000000000000000000000000000000000000000000000000000000000
     model_path: C:/PASTE/PREFLIGHT/MODEL/PATH/model.gguf
-    model_sha256: null
+    model_sha256: 0000000000000000000000000000000000000000000000000000000000000000
     chat_template_sha256: 0000000000000000000000000000000000000000000000000000000000000000
   expected_effective_configuration_json: '{"PASTE":"the exact canonical expected_effective_configuration_json from preflight"}'
 policy_specs:
@@ -125,8 +125,8 @@ evaluation:
   required_matched_coverage: 1.0
   behavioral_alias_tolerance: 0.0
 confirmatory_analysis:
-  schema_version: 1
-  implementation_version: confirmatory-analysis-v1
+  schema_version: 2
+  implementation_version: confirmatory-analysis-v2
   primary_endpoint: guardrail_clean_task_score
   efficacy:
     schema_version: 1
@@ -145,7 +145,11 @@ confirmatory_analysis:
     permutation_seed: 8202
   recovery:
     schema_version: 1
-    implementation_version: output-recovery-v1
+    implementation_version: output-recovery-v2
+    serious_comparator_ids:
+      - best_static
+      - heuristic_adaptive
+    comparator_reduction_version: per-unit-minimum-serious-comparator-margin-v1
     practical_thresholds:
       post_stressor_task_score_change: 0.02
       post_stressor_repetition_change: 0.02
@@ -163,6 +167,19 @@ confirmatory_analysis:
     bootstrap_seed: 8204
     permutation_resamples: 10000
     permutation_seed: 8205
+  validated_negative_multiplicity:
+    schema_version: 1
+    method_version: bonferroni-simultaneous-bootstrap-v1
+    familywise_alpha: 0.05
+    gate_ids:
+      - efficacy:best_static
+      - efficacy:heuristic_adaptive
+      - efficacy:random_matched
+      - recovery:post_stressor_task_score_change
+      - recovery:post_stressor_repetition_change
+      - recovery:time_to_return_to_target_band
+      - attribution:neural_matched_history_state_reset
+    adjusted_two_sided_confidence_level: 0.9928571428571429
   recovery_events:
     - prompt_sequence_id: confirm-01-queue-burst
       stressor_turn_index: 2
@@ -385,6 +402,6 @@ metric_versions:
   response_length_tokens: unicode-nfkc-casefold-whitespace-v1
   semantic_similarity: semantic-unavailable-v1
   task_score: validator-v1
-decision_rule_version: confirmatory-scientific-decision-v1
+decision_rule_version: confirmatory-scientific-decision-v2
 database_schema_version: 2
 artifact_root: ../../runs/model-backed-confirmatory

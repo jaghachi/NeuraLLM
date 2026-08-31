@@ -21,10 +21,14 @@ from neurallm.evaluation.attribution import (
     evaluate_persistent_state_attribution,
 )
 from neurallm.evaluation.confirmatory import (
+    AttributionUnitOutcome,
     ConfirmatoryAnalysisSpec,
     ConfirmatoryEvaluationResult,
+    RecoveryUnitOutcome,
     ScientificUnitOutcome,
+    SubgroupEffectResult,
     confirmatory_result_sha256,
+    confirmatory_statistics_call_count,
 )
 from neurallm.evaluation.guardrails import (
     action_saturation_guardrail,
@@ -33,9 +37,12 @@ from neurallm.evaluation.guardrails import (
 )
 from neurallm.evaluation.models import (
     DatasetPurpose,
+    EvaluationSpec,
+    ExpectedEvaluationDesign,
     GuardrailName,
     GuardrailResult,
     GuardrailStatus,
+    MatchedUnitKey,
     SequencePolicyOutcome,
     TurnEvaluationRecord,
 )
@@ -52,12 +59,12 @@ from neurallm.evaluation.scientific import (
     EFFICACY_COMPARATOR_IDS,
     FOCAL_POLICY_ID,
     SERIOUS_COMPARATOR_IDS,
-    EfficacyComparisonResult,
     ExperimentTier,
     GuardrailCleanTaskScore,
     LimitationDisposition,
     LimitationKind,
     ScientificDecisionInput,
+    ScientificEvidenceStatus,
     ScientificFrozenModel,
     ScientificGuardrailResult,
     ScientificGuardrailStatus,
@@ -79,6 +86,7 @@ from neurallm.experiments.protocol import (
     MODEL_BACKED_POLICY_IDS,
     RunTier,
 )
+from neurallm.providers.llama_cpp import require_llama_cpp_provider_binding
 from neurallm.storage import (
     RunFinalization,
     SQLiteRunStore,
@@ -124,6 +132,22 @@ def _require_confirmatory_plan(plan: ExperimentPlan) -> ConfirmatoryAnalysisSpec
     ):
         raise ValueError("scientific analysis requires the exact confirmatory five-arm protocol")
     if (
+        plan.provider_identity.provider_type != "llama_cpp"
+        or plan.provider_identity.model_sha256 is None
+    ):
+        raise ValueError(
+            "scientific analysis requires llama_cpp provider identity with a model-artifact SHA-256"
+        )
+    try:
+        require_llama_cpp_provider_binding(
+            plan.provider_identity,
+            plan.provider_effective_configuration_json,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "scientific analysis requires internally consistent llama_cpp identity evidence"
+        ) from exc
+    if (
         plan.confirmatory_analysis is None
         or plan.evaluation is None
         or plan.evaluation_spec_sha256 != canonical_sha256(plan.evaluation)
@@ -160,6 +184,10 @@ def confirmatory_analysis_contract_sha256(
     preregistration_sha256: str,
     confirmatory_analysis_spec: ConfirmatoryAnalysisSpec,
     confirmatory_analysis_spec_sha256: str,
+    evaluation_spec: EvaluationSpec,
+    evaluation_spec_sha256: str,
+    prompt_family_by_sequence: Mapping[str, str],
+    prompt_family_design_sha256: str,
     dataset_sha256: str,
     dataset_purpose: DatasetPurpose,
     dataset_seal_sha256: str,
@@ -176,16 +204,26 @@ def confirmatory_analysis_contract_sha256(
 
     if confirmatory_analysis_spec_sha256 != canonical_sha256(confirmatory_analysis_spec):
         raise ValueError("confirmatory analysis spec hash does not match its canonical evidence")
+    if evaluation_spec_sha256 != canonical_sha256(evaluation_spec):
+        raise ValueError("evaluation spec hash does not match its canonical evidence")
+    if not prompt_family_by_sequence or prompt_family_design_sha256 != canonical_sha256(
+        prompt_family_by_sequence
+    ):
+        raise ValueError("prompt-family design hash does not match its canonical evidence")
     if dataset_purpose is not DatasetPurpose.EVALUATION:
         raise ValueError("confirmatory analysis requires evaluation-purpose data")
     return canonical_sha256(
         {
-            "schema_version": 1,
-            "implementation_version": "confirmatory-analysis-contract-v1",
+            "schema_version": 2,
+            "implementation_version": "confirmatory-analysis-contract-v2",
             "scientific_identity_sha256": scientific_identity_sha256,
             "preregistration_sha256": preregistration_sha256,
             "confirmatory_analysis_spec": confirmatory_analysis_spec,
             "confirmatory_analysis_spec_sha256": confirmatory_analysis_spec_sha256,
+            "evaluation_spec": evaluation_spec,
+            "evaluation_spec_sha256": evaluation_spec_sha256,
+            "prompt_family_by_sequence": dict(sorted(prompt_family_by_sequence.items())),
+            "prompt_family_design_sha256": prompt_family_design_sha256,
             "dataset_sha256": dataset_sha256,
             "dataset_purpose": dataset_purpose,
             "dataset_seal_sha256": dataset_seal_sha256,
@@ -200,11 +238,18 @@ def build_confirmatory_analysis_contract_sha256(plan: ExperimentPlan) -> str:
     assert plan.dataset_seal is not None
     assert plan.preregistration is not None
     assert plan.dataset_purpose is not None
+    assert plan.evaluation is not None
+    assert plan.evaluation_spec_sha256 is not None
+    prompt_family_by_sequence = _prompt_family_by_sequence(plan)
     return confirmatory_analysis_contract_sha256(
         scientific_identity_sha256=plan.scientific_identity_sha256,
         preregistration_sha256=plan.preregistration.seal_sha256,
         confirmatory_analysis_spec=spec,
         confirmatory_analysis_spec_sha256=canonical_sha256(spec),
+        evaluation_spec=plan.evaluation,
+        evaluation_spec_sha256=plan.evaluation_spec_sha256,
+        prompt_family_by_sequence=prompt_family_by_sequence,
+        prompt_family_design_sha256=canonical_sha256(prompt_family_by_sequence),
         dataset_sha256=plan.dataset_hash,
         dataset_purpose=plan.dataset_purpose,
         dataset_seal_sha256=plan.dataset_seal.seal_sha256,
@@ -223,6 +268,7 @@ def _validate_manifest(plan: ExperimentPlan, manifest: RunManifest) -> None:
         or manifest.dataset_hash != plan.dataset_hash
         or manifest.provider_identity != plan.provider_identity
         or manifest.provider_identity.provider_type != "llama_cpp"
+        or manifest.provider_identity.model_sha256 is None
         or manifest.provider_effective_configuration_json
         != plan.provider_effective_configuration_json
         or manifest.action_bounds != plan.action_bounds
@@ -296,6 +342,93 @@ def _scientific_guardrail(
     )
 
 
+def _scientific_guardrails_from_records(
+    records: tuple[TurnEvaluationRecord, ...],
+    design: ExpectedEvaluationDesign,
+    evaluation_spec: EvaluationSpec,
+) -> tuple[ScientificGuardrailResult, ...]:
+    """Recompute every confirmatory guardrail from frozen source evidence."""
+
+    coverage = validate_exact_coverage(records, design)
+    global_guardrails = tuple(
+        _scientific_guardrail(guardrail, scope_prefix="efficacy")
+        for guardrail in integrity_guardrails(records, design, coverage)
+    )
+    efficacy_records = tuple(
+        record for record in records if record.policy_id in EFFICACY_POLICY_IDS
+    )
+    efficacy_by_policy = _outcomes_by_policy(aggregate_matched_units(efficacy_records))
+    if set(efficacy_by_policy) != set(EFFICACY_POLICY_IDS):
+        raise ValueError("efficacy aggregation must contain exactly four independent arms")
+    focal = tuple(efficacy_by_policy[FOCAL_POLICY_ID].values())
+    saturation = _scientific_guardrail(
+        action_saturation_guardrail(
+            efficacy_records,
+            focal_policy_id=FOCAL_POLICY_ID,
+            maximum_rate=evaluation_spec.maximum_action_saturation_rate,
+        ),
+        scope_prefix="efficacy",
+    )
+    efficacy_pairs = tuple(
+        _scientific_guardrail(guardrail, scope_prefix="efficacy")
+        for comparator_id in EFFICACY_COMPARATOR_IDS
+        for guardrail in pairwise_guardrails(
+            focal,
+            tuple(efficacy_by_policy[comparator_id].values()),
+            focal_policy_id=FOCAL_POLICY_ID,
+            comparator_policy_id=comparator_id,
+            maximum_adherence_regression=evaluation_spec.maximum_adherence_regression,
+            maximum_length_reduction_ratio=evaluation_spec.maximum_length_reduction_ratio,
+            behavioral_alias_tolerance=evaluation_spec.behavioral_alias_tolerance,
+        )
+    )
+    attribution_records = tuple(
+        record
+        for record in records
+        if record.turn_index > 0
+        and record.policy_id in {FOCAL_POLICY_ID, ATTRIBUTION_COMPARATOR_ID}
+    )
+    attribution_by_policy = _outcomes_by_policy(aggregate_matched_units(attribution_records))
+    if set(attribution_by_policy) != {FOCAL_POLICY_ID, ATTRIBUTION_COMPARATOR_ID}:
+        raise ValueError("attribution requires exact persistent/reset intervention units")
+    attribution_pairs = tuple(
+        _scientific_guardrail(guardrail, scope_prefix="attribution")
+        for guardrail in pairwise_guardrails(
+            tuple(attribution_by_policy[FOCAL_POLICY_ID].values()),
+            tuple(attribution_by_policy[ATTRIBUTION_COMPARATOR_ID].values()),
+            focal_policy_id=FOCAL_POLICY_ID,
+            comparator_policy_id=ATTRIBUTION_COMPARATOR_ID,
+            maximum_adherence_regression=evaluation_spec.maximum_adherence_regression,
+            maximum_length_reduction_ratio=evaluation_spec.maximum_length_reduction_ratio,
+            behavioral_alias_tolerance=evaluation_spec.behavioral_alias_tolerance,
+        )
+    )
+    intervention_count = len(attribution_records)
+    causal_guardrails = (
+        ScientificGuardrailResult(
+            name="causal_mechanism_validation",
+            status=ScientificGuardrailStatus.PASS,
+            scope="attribution:causal",
+            detail="stored persistent/reset mechanism evidence passed the causal validator",
+        ),
+        ScientificGuardrailResult(
+            name="intervention_turn_only_attribution",
+            status=ScientificGuardrailStatus.PASS,
+            scope="attribution:causal",
+            detail="turn zero is excluded and every attribution observation has turn_index > 0",
+            observed_value=float(intervention_count),
+            threshold=float(intervention_count),
+        ),
+    )
+    return (
+        *global_guardrails,
+        saturation,
+        *efficacy_pairs,
+        *causal_guardrails,
+        *attribution_pairs,
+    )
+
+
 def _outcomes_by_policy(
     outcomes: Sequence[SequencePolicyOutcome],
 ) -> dict[str, dict[tuple[str, int], SequencePolicyOutcome]]:
@@ -332,6 +465,7 @@ def _gate_status(
 def _scientific_unit_outcomes(
     outcomes: Sequence[SequencePolicyOutcome],
     *,
+    prompt_family_by_sequence: Mapping[str, str],
     global_guardrails: tuple[ScientificGuardrailResult, ...],
     saturation_guardrail: ScientificGuardrailResult,
     pair_guardrails: Mapping[str, tuple[ScientificGuardrailResult, ...]],
@@ -350,6 +484,7 @@ def _scientific_unit_outcomes(
             ScientificUnitOutcome.model_validate(
                 {
                     "unit_key": outcome.unit_key,
+                    "prompt_family": prompt_family_by_sequence[outcome.unit_key.prompt_sequence_id],
                     "policy_id": outcome.policy_id,
                     "guardrail_clean_task_score": GuardrailCleanTaskScore(
                         raw_task_score=outcome.task_score,
@@ -412,16 +547,20 @@ def _turn_metric_means(
 def _recovery_evidence(
     records: Sequence[TurnEvaluationRecord],
     spec: ConfirmatoryAnalysisSpec,
-) -> tuple[RecoveryEvaluationResult, int, int]:
+    *,
+    perform_statistics: bool = True,
+) -> tuple[RecoveryEvaluationResult, tuple[RecoveryUnitOutcome, ...], int, int]:
     means = _turn_metric_means(records)
     model_seeds = tuple(sorted({record.model_seed for record in records}))
     task_differences: list[float] = []
     repetition_differences: list[float] = []
     return_time_differences: list[float] = []
+    unit_outcomes: list[RecoveryUnitOutcome] = []
     focal_censored = 0
     comparator_censored = 0
     for event in spec.recovery_events:
         for model_seed in model_seeds:
+            unit_comparator_censored = 0
             focal_stressor = means[
                 (
                     event.prompt_sequence_id,
@@ -445,7 +584,7 @@ def _recovery_evidence(
             comparator_task_changes: list[float] = []
             comparator_repetition_changes: list[float] = []
             comparator_return_times: list[float] = []
-            for comparator_policy_id in SERIOUS_COMPARATOR_IDS:
+            for comparator_policy_id in spec.recovery.serious_comparator_ids:
                 stressor = means[
                     (
                         event.prompt_sequence_id,
@@ -485,6 +624,7 @@ def _recovery_evidence(
                 )
                 if return_time is None:
                     comparator_censored += 1
+                    unit_comparator_censored += 1
                     return_time = len(event.recovery_turn_indexes) + 1
                 comparator_return_times.append(float(return_time))
             focal_return_time = time_to_return_to_target_band(
@@ -496,24 +636,57 @@ def _recovery_evidence(
             if focal_return_time is None:
                 focal_censored += 1
                 focal_return_time = len(event.recovery_turn_indexes) + 1
-            task_differences.append(focal_task_change - _mean(comparator_task_changes))
-            repetition_differences.append(
-                focal_repetition_change - _mean(comparator_repetition_changes)
+                focal_unit_censored = True
+            else:
+                focal_unit_censored = False
+            task_difference = min(
+                focal_task_change - comparator_change
+                for comparator_change in comparator_task_changes
             )
-            return_time_differences.append(
-                _mean(comparator_return_times) - float(focal_return_time)
+            repetition_difference = min(
+                focal_repetition_change - comparator_change
+                for comparator_change in comparator_repetition_changes
             )
-    result = evaluate_recovery(
-        {
-            RecoveryMetricName.POST_STRESSOR_TASK_SCORE_CHANGE: tuple(task_differences),
-            RecoveryMetricName.POST_STRESSOR_REPETITION_CHANGE: tuple(repetition_differences),
-            RecoveryMetricName.TIME_TO_RETURN_TO_TARGET_BAND: tuple(return_time_differences),
-        },
-        spec=spec.recovery,
-        right_censored_focal_units=focal_censored,
-        right_censored_comparator_units=comparator_censored,
-    )
-    return result, focal_censored, comparator_censored
+            return_time_difference = min(
+                comparator_time - float(focal_return_time)
+                for comparator_time in comparator_return_times
+            )
+            task_differences.append(task_difference)
+            repetition_differences.append(repetition_difference)
+            return_time_differences.append(return_time_difference)
+            unit_outcomes.append(
+                RecoveryUnitOutcome(
+                    unit_key=MatchedUnitKey(
+                        prompt_sequence_id=event.prompt_sequence_id,
+                        model_seed=model_seed,
+                    ),
+                    post_stressor_task_score_change=task_difference,
+                    post_stressor_repetition_change=repetition_difference,
+                    time_to_return_to_target_band=return_time_difference,
+                    focal_right_censored=focal_unit_censored,
+                    comparator_right_censored_count=unit_comparator_censored,
+                )
+            )
+    if perform_statistics:
+        result = evaluate_recovery(
+            {
+                RecoveryMetricName.POST_STRESSOR_TASK_SCORE_CHANGE: tuple(task_differences),
+                RecoveryMetricName.POST_STRESSOR_REPETITION_CHANGE: tuple(repetition_differences),
+                RecoveryMetricName.TIME_TO_RETURN_TO_TARGET_BAND: tuple(return_time_differences),
+            },
+            spec=spec.recovery,
+            negative_multiplicity=spec.validated_negative_multiplicity,
+            right_censored_focal_units=focal_censored,
+            right_censored_comparator_units=comparator_censored,
+        )
+    else:
+        result = RecoveryEvaluationResult(
+            status=ScientificEvidenceStatus.INVALID,
+            detail="global integrity evidence failed before recovery statistics",
+            right_censored_focal_units=focal_censored,
+            right_censored_comparator_units=comparator_censored,
+        )
+    return result, tuple(unit_outcomes), focal_censored, comparator_censored
 
 
 def _prompt_family_by_sequence(plan: ExperimentPlan) -> dict[str, str]:
@@ -528,12 +701,12 @@ def _prompt_family_by_sequence(plan: ExperimentPlan) -> dict[str, str]:
 def _subgroup_limitations(
     plan: ExperimentPlan,
     outcomes: Mapping[str, Mapping[tuple[str, int], SequencePolicyOutcome]],
-) -> tuple[tuple[ScientificLimitation, ...], int]:
+) -> tuple[tuple[ScientificLimitation, ...], tuple[SubgroupEffectResult, ...]]:
     assert plan.confirmatory_analysis is not None
     family_by_sequence = _prompt_family_by_sequence(plan)
     spec = plan.confirmatory_analysis.efficacy
     limitations: list[ScientificLimitation] = []
-    call_count = 0
+    effects: list[SubgroupEffectResult] = []
     for comparator_policy_id in SERIOUS_COMPARATOR_IDS:
         focal = outcomes[FOCAL_POLICY_ID]
         comparator = outcomes[comparator_policy_id]
@@ -545,18 +718,32 @@ def _subgroup_limitations(
         if len(grouped) < 2:
             continue
         directions: set[str] = set()
-        for differences in grouped.values():
+        for field_value, differences in sorted(grouped.items()):
             bootstrap = paired_bootstrap_ci(
                 tuple(differences),
                 resamples=spec.bootstrap_resamples,
                 confidence_level=spec.confidence_level,
                 seed=spec.bootstrap_seed,
             )
-            call_count += 1
+            direction: Literal["beneficial", "harmful", "unresolved"]
             if bootstrap.estimate >= spec.practical_effect_threshold and bootstrap.lower > 0.0:
-                directions.add("beneficial")
+                direction = "beneficial"
             elif bootstrap.upper < 0.0:
-                directions.add("harmful")
+                direction = "harmful"
+            else:
+                direction = "unresolved"
+            effects.append(
+                SubgroupEffectResult(
+                    field_value=field_value,
+                    comparator_policy_id=comparator_policy_id,
+                    unit_count=len(differences),
+                    bootstrap=bootstrap,
+                    practical_effect_threshold=spec.practical_effect_threshold,
+                    direction=direction,
+                )
+            )
+            if direction != "unresolved":
+                directions.add(direction)
         if directions == {"beneficial", "harmful"}:
             limitations.append(
                 ScientificLimitation(
@@ -569,7 +756,7 @@ def _subgroup_limitations(
                     disposition=LimitationDisposition.INCONCLUSIVE,
                 )
             )
-    return tuple(limitations), call_count
+    return tuple(limitations), tuple(effects)
 
 
 def _optional_metric_limitations(
@@ -618,24 +805,6 @@ def _optional_metric_availability_from_turns(
     return counts
 
 
-def _statistics_call_count(
-    efficacy: Sequence[EfficacyComparisonResult],
-    recovery: RecoveryEvaluationResult,
-    attribution: PersistentStateAttributionResult,
-    *,
-    subgroup_calls: int,
-) -> int:
-    efficacy_calls = sum(
-        int(comparison.bootstrap is not None) + int(comparison.permutation is not None)
-        for comparison in efficacy
-    )
-    recovery_calls = len(recovery.metric_results)
-    attribution_calls = int(attribution.bootstrap is not None) + int(
-        attribution.permutation is not None
-    )
-    return efficacy_calls + recovery_calls + attribution_calls + subgroup_calls
-
-
 def _analyze_records(
     plan: ExperimentPlan,
     records: tuple[TurnEvaluationRecord, ...],
@@ -654,7 +823,6 @@ def _analyze_records(
     if not coverage.exact:
         raise ValueError("confirmatory analysis requires exact full five-arm coverage")
 
-    raw_global_guardrails = integrity_guardrails(records, design, coverage)
     efficacy_records = tuple(
         record for record in records if record.policy_id in EFFICACY_POLICY_IDS
     )
@@ -663,39 +831,31 @@ def _analyze_records(
     if set(outcomes_by_policy) != set(EFFICACY_POLICY_IDS):
         raise ValueError("efficacy aggregation must contain exactly four independent arms")
     assert plan.evaluation is not None
-    focal_outcomes = tuple(outcomes_by_policy[FOCAL_POLICY_ID].values())
-    raw_saturation = action_saturation_guardrail(
-        efficacy_records,
-        focal_policy_id=FOCAL_POLICY_ID,
-        maximum_rate=plan.evaluation.maximum_action_saturation_rate,
-    )
-    raw_pair_guardrails: dict[str, tuple[GuardrailResult, ...]] = {}
-    for comparator_policy_id in EFFICACY_COMPARATOR_IDS:
-        raw_pair_guardrails[comparator_policy_id] = pairwise_guardrails(
-            focal_outcomes,
-            tuple(outcomes_by_policy[comparator_policy_id].values()),
-            focal_policy_id=FOCAL_POLICY_ID,
-            comparator_policy_id=comparator_policy_id,
-            maximum_adherence_regression=plan.evaluation.maximum_adherence_regression,
-            maximum_length_reduction_ratio=plan.evaluation.maximum_length_reduction_ratio,
-            behavioral_alias_tolerance=plan.evaluation.behavioral_alias_tolerance,
-        )
+    final_guardrails = _scientific_guardrails_from_records(records, design, plan.evaluation)
     scientific_global = tuple(
-        _scientific_guardrail(guardrail, scope_prefix="efficacy")
-        for guardrail in raw_global_guardrails
+        guardrail for guardrail in final_guardrails if guardrail.scope == "efficacy:global"
     )
-    scientific_saturation = _scientific_guardrail(
-        raw_saturation,
-        scope_prefix="efficacy",
+    scientific_saturation = next(
+        guardrail
+        for guardrail in final_guardrails
+        if guardrail.name == GuardrailName.ACTION_SATURATION_RATE.value
+        and guardrail.scope == f"efficacy:policy:{FOCAL_POLICY_ID}"
     )
-    scientific_pairs = {
+    scientific_pairs: dict[str, tuple[ScientificGuardrailResult, ...]] = {
         comparator_policy_id: tuple(
-            _scientific_guardrail(guardrail, scope_prefix="efficacy") for guardrail in guardrails
+            guardrail
+            for guardrail in final_guardrails
+            if guardrail.scope == f"efficacy:pair:{FOCAL_POLICY_ID}:{comparator_policy_id}"
         )
-        for comparator_policy_id, guardrails in raw_pair_guardrails.items()
+        for comparator_policy_id in EFFICACY_COMPARATOR_IDS
     }
+    integrity_invalid = any(
+        guardrail.status is ScientificGuardrailStatus.INVALID for guardrail in scientific_global
+    )
+    prompt_family_by_sequence = _prompt_family_by_sequence(plan)
     unit_outcomes = _scientific_unit_outcomes(
         efficacy_outcomes,
+        prompt_family_by_sequence=prompt_family_by_sequence,
         global_guardrails=scientific_global,
         saturation_guardrail=scientific_saturation,
         pair_guardrails=scientific_pairs,
@@ -710,9 +870,9 @@ def _analyze_records(
     }
     aliases: dict[str, bool] = {
         comparator_policy_id: any(
-            guardrail.name is GuardrailName.BEHAVIORAL_ALIAS_DETECTION
-            and guardrail.status is GuardrailStatus.FAIL
-            for guardrail in raw_pair_guardrails[comparator_policy_id]
+            guardrail.name == GuardrailName.BEHAVIORAL_ALIAS_DETECTION.value
+            and guardrail.status is ScientificGuardrailStatus.FAIL
+            for guardrail in scientific_pairs[comparator_policy_id]
         )
         for comparator_policy_id in EFFICACY_COMPARATOR_IDS
     }
@@ -725,11 +885,21 @@ def _analyze_records(
             for comparator_policy_id in EFFICACY_COMPARATOR_IDS
         },
         spec=spec.efficacy,
+        negative_multiplicity=spec.validated_negative_multiplicity,
         guardrails_by_comparator=comparison_guardrails,
         behavioral_alias_by_comparator=aliases,
     )
 
-    recovery, focal_censored, comparator_censored = _recovery_evidence(records, spec)
+    (
+        recovery,
+        recovery_unit_outcomes,
+        focal_censored,
+        comparator_censored,
+    ) = _recovery_evidence(
+        records,
+        spec,
+        perform_statistics=not integrity_invalid,
+    )
     attribution_records = tuple(
         record
         for record in records
@@ -740,50 +910,47 @@ def _analyze_records(
     attribution_by_policy = _outcomes_by_policy(attribution_outcomes)
     if set(attribution_by_policy) != {FOCAL_POLICY_ID, ATTRIBUTION_COMPARATOR_ID}:
         raise ValueError("attribution requires exact persistent/reset intervention units")
-    attribution_pair_raw = pairwise_guardrails(
-        tuple(attribution_by_policy[FOCAL_POLICY_ID].values()),
-        tuple(attribution_by_policy[ATTRIBUTION_COMPARATOR_ID].values()),
-        focal_policy_id=FOCAL_POLICY_ID,
-        comparator_policy_id=ATTRIBUTION_COMPARATOR_ID,
-        maximum_adherence_regression=plan.evaluation.maximum_adherence_regression,
-        maximum_length_reduction_ratio=plan.evaluation.maximum_length_reduction_ratio,
-        behavioral_alias_tolerance=plan.evaluation.behavioral_alias_tolerance,
+    causal_guardrails = tuple(
+        guardrail for guardrail in final_guardrails if guardrail.scope.startswith("attribution:")
     )
-    attribution_pair_guardrails = tuple(
-        _scientific_guardrail(guardrail, scope_prefix="attribution")
-        for guardrail in attribution_pair_raw
+    attribution_focal = attribution_by_policy[FOCAL_POLICY_ID]
+    attribution_comparator = attribution_by_policy[ATTRIBUTION_COMPARATOR_ID]
+    if attribution_focal.keys() != attribution_comparator.keys():
+        raise ValueError("attribution outcomes lack exact persistent/reset matched-unit keys")
+    attribution_unit_outcomes = tuple(
+        AttributionUnitOutcome(
+            unit_key=MatchedUnitKey(
+                prompt_sequence_id=key[0],
+                model_seed=key[1],
+            ),
+            persistent_minus_reset_task_score=(
+                attribution_focal[key].task_score - attribution_comparator[key].task_score
+            ),
+        )
+        for key in sorted(attribution_focal)
     )
-    intervention_count = len(attribution_records)
-    causal_guardrails = (
-        ScientificGuardrailResult(
-            name="causal_mechanism_validation",
-            status=ScientificGuardrailStatus.PASS,
-            scope="attribution:causal",
-            detail="stored persistent/reset mechanism evidence passed the causal validator",
-        ),
-        ScientificGuardrailResult(
-            name="intervention_turn_only_attribution",
-            status=ScientificGuardrailStatus.PASS,
-            scope="attribution:causal",
-            detail="turn zero is excluded and every attribution observation has turn_index > 0",
-            observed_value=float(intervention_count),
-            threshold=float(intervention_count),
-        ),
-        *attribution_pair_guardrails,
+    attribution_differences = tuple(
+        outcome.persistent_minus_reset_task_score for outcome in attribution_unit_outcomes
     )
-    attribution_differences = _paired_task_differences(
-        attribution_by_policy,
-        ATTRIBUTION_COMPARATOR_ID,
-    )
-    attribution = evaluate_persistent_state_attribution(
-        attribution_differences,
-        spec=spec.attribution,
-        causal_guardrails=causal_guardrails,
-        behavioral_alias=(
-            max(abs(difference) for difference in attribution_differences)
-            <= plan.evaluation.behavioral_alias_tolerance
-        ),
-    )
+    if integrity_invalid:
+        attribution = PersistentStateAttributionResult(
+            unit_count=len(attribution_differences),
+            practical_effect_threshold=spec.attribution.practical_effect_threshold,
+            causal_guardrails=causal_guardrails,
+            status=ScientificEvidenceStatus.INVALID,
+            detail="global integrity evidence failed before attribution statistics",
+        )
+    else:
+        attribution = evaluate_persistent_state_attribution(
+            attribution_differences,
+            spec=spec.attribution,
+            negative_multiplicity=spec.validated_negative_multiplicity,
+            causal_guardrails=causal_guardrails,
+            behavioral_alias=(
+                max(abs(difference) for difference in attribution_differences)
+                <= plan.evaluation.behavioral_alias_tolerance
+            ),
+        )
 
     limitations = list(_optional_metric_limitations(spec, optional_metric_availability))
     if focal_censored or comparator_censored:
@@ -798,14 +965,15 @@ def _analyze_records(
                 disposition=LimitationDisposition.DISCLOSURE_ONLY,
             )
         )
-    subgroup_limitations, subgroup_calls = _subgroup_limitations(plan, outcomes_by_policy)
+    if integrity_invalid:
+        subgroup_limitations: tuple[ScientificLimitation, ...] = ()
+        subgroup_effects: tuple[SubgroupEffectResult, ...] = ()
+    else:
+        subgroup_limitations, subgroup_effects = _subgroup_limitations(
+            plan,
+            outcomes_by_policy,
+        )
     limitations.extend(subgroup_limitations)
-    final_guardrails = (
-        *scientific_global,
-        scientific_saturation,
-        *(guardrail for values in scientific_pairs.values() for guardrail in values),
-        *causal_guardrails,
-    )
     decision_input = ScientificDecisionInput(
         tier=ExperimentTier.CONFIRMATORY,
         efficacy_comparisons=efficacy,
@@ -818,8 +986,8 @@ def _analyze_records(
     analysis_contract_sha256 = build_confirmatory_analysis_contract_sha256(plan)
     input_sha256 = canonical_sha256(
         {
-            "schema_version": 1,
-            "implementation_version": "confirmatory-analysis-input-v1",
+            "schema_version": 2,
+            "implementation_version": "confirmatory-analysis-input-v2",
             "analysis_contract_sha256": analysis_contract_sha256,
             "records": tuple(sorted(records, key=record_sort_key)),
             "optional_metric_availability": dict(sorted(optional_metric_availability.items())),
@@ -829,27 +997,38 @@ def _analyze_records(
             "run_finalization_sha256": run_finalization_sha256,
         }
     )
-    statistics_call_count = _statistics_call_count(
+    statistics_call_count = confirmatory_statistics_call_count(
         efficacy,
         recovery,
         attribution,
-        subgroup_calls=subgroup_calls,
+        subgroup_effects,
     )
     payload: dict[str, object] = {
-        "schema_version": 1,
-        "implementation_version": "confirmatory-evaluation-v1",
+        "schema_version": 2,
+        "implementation_version": "confirmatory-evaluation-v2",
         "claim_scope": "confirmatory-model-backed-scientific-decision",
         "analysis_contract_sha256": analysis_contract_sha256,
+        "confirmatory_analysis_spec": spec,
+        "confirmatory_analysis_spec_sha256": canonical_sha256(spec),
+        "prompt_family_by_sequence": prompt_family_by_sequence,
+        "prompt_family_design_sha256": canonical_sha256(prompt_family_by_sequence),
+        "validated_negative_multiplicity_sha256": canonical_sha256(
+            spec.validated_negative_multiplicity
+        ),
         "causal_mechanism_validated": causal_mechanism_validated,
         "claim_eligible": claim_eligible,
         "run_manifest_sha256": run_manifest_sha256,
         "run_finalization_sha256": run_finalization_sha256,
         "input_sha256": input_sha256,
         "coverage": coverage,
+        "optional_metric_availability": dict(sorted(optional_metric_availability.items())),
         "unit_outcomes": unit_outcomes,
+        "recovery_unit_outcomes": recovery_unit_outcomes,
+        "attribution_unit_outcomes": attribution_unit_outcomes,
         "efficacy_comparisons": efficacy,
         "recovery": recovery,
         "attribution": attribution,
+        "subgroup_effects": subgroup_effects,
         "guardrails": final_guardrails,
         "limitations": tuple(limitations),
         "decision": decision,

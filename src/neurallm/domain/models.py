@@ -71,6 +71,7 @@ _MODEL_BACKED_RULE_TIERS = {
     "engineering-smoke-no-scientific-decision-v1": "engineering_smoke",
     "development-pilot-no-scientific-decision-v1": "development_pilot",
     "confirmatory-scientific-decision-v1": "confirmatory",
+    "confirmatory-scientific-decision-v2": "confirmatory",
 }
 
 
@@ -339,6 +340,14 @@ class RunManifest(StrictFrozenModel):
     decoding_bounds: DecodingBounds = DecodingBounds()
     decision_rule_version: NonEmptyString
     database_schema_version: PositiveInt
+    evaluation_spec_json: NonEmptyString | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    evaluation_spec_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     phase3_analysis_contract_sha256: Sha256Hex | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -460,6 +469,22 @@ class RunManifest(StrictFrozenModel):
             raise ValueError(
                 "provider effective configuration must be finite canonical JSON"
             ) from exc
+        if (self.evaluation_spec_json is None) != (self.evaluation_spec_sha256 is None):
+            raise ValueError("evaluation spec JSON and SHA-256 must appear together")
+        if self.evaluation_spec_json is not None:
+            assert self.evaluation_spec_sha256 is not None
+            try:
+                evaluation_spec: object = json.loads(self.evaluation_spec_json)
+                if not isinstance(evaluation_spec, dict) or not all(
+                    isinstance(key, str) for key in evaluation_spec
+                ):
+                    raise ValueError("evaluation spec must be a JSON object")
+                if canonical_json(evaluation_spec) != self.evaluation_spec_json:
+                    raise ValueError("evaluation spec must be canonical JSON")
+                if canonical_sha256(evaluation_spec) != self.evaluation_spec_sha256:
+                    raise ValueError("evaluation spec hash does not match manifest")
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError("evaluation spec must be finite canonical JSON") from exc
         phase3 = self.decision_rule_version == "phase3-baseline-evaluator-v1"
         if phase3 and self.phase3_analysis_contract_sha256 is None:
             raise ValueError("Phase 3 run manifest requires its pre-execution analysis contract")

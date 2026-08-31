@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -20,7 +21,6 @@ from neurallm.domain.models import (
     ActionBounds,
     DecodingBounds,
     PromptFeatures,
-    ProviderIdentity,
     RunManifest,
 )
 from neurallm.domain.serialization import canonical_json, canonical_sha256
@@ -30,8 +30,10 @@ from neurallm.evaluation.confirmatory import (
     ConfirmatoryAnalysisSpec,
     ConfirmatoryEvaluationResult,
     RecoveryEventSpec,
+    confirmatory_result_sha256,
 )
 from neurallm.evaluation.models import (
+    CoverageResult,
     DatasetPurpose,
     EvaluationSpec,
     MatchedUnitKey,
@@ -92,6 +94,11 @@ from neurallm.providers.fake import (
     fake_provider_effective_configuration_json,
     fake_provider_identity,
 )
+from neurallm.providers.llama_cpp import (
+    LlamaCppEffectiveConfiguration,
+    LlamaCppProviderConfig,
+    llama_cpp_provider_identity,
+)
 from neurallm.storage import StoreInvariantError
 from neurallm.storage.migrations import CURRENT_SCHEMA_VERSION
 from neurallm.storage.models import DurableExecutionAccounting, RunFinalization
@@ -127,20 +134,47 @@ def _provider_selection(
             expected_identity=fake_provider_identity(),
             expected_effective_configuration_json=(fake_provider_effective_configuration_json()),
         )
-    effective = {"endpoint": "http://127.0.0.1:8080", "request_mode": "completion"}
+    model_path = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "llama_cpp_model_stub.txt"
+    ).resolve()
+    model_sha256 = sha256(model_path.read_bytes()).hexdigest()
+    chat_template = "{% for message in messages %}{{ message.content }}{% endfor %}"
+    provider_config = LlamaCppProviderConfig(
+        base_url="http://127.0.0.1:8080",
+        model_alias="orchestration-test-model",
+        model_path=str(model_path),
+        model_sha256=model_sha256,
+        build_id="orchestration-test-build",
+        chat_template_sha256=sha256(chat_template.encode("utf-8")).hexdigest(),
+        connect_timeout_seconds=1.0,
+        read_timeout_seconds=2.0,
+        write_timeout_seconds=3.0,
+        pool_timeout_seconds=4.0,
+    )
+    effective = LlamaCppEffectiveConfiguration(
+        client_config=provider_config,
+        model_alias=provider_config.model_alias,
+        model_path=provider_config.model_path,
+        model_sha256=provider_config.model_sha256,
+        build_id=provider_config.build_id,
+        chat_template=chat_template,
+        chat_template_sha256=provider_config.chat_template_sha256,
+        default_generation_settings_json=canonical_json(
+            {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "top_k": 40,
+                "presence_penalty": 0.0,
+                "n_predict": 64,
+                "seed": 11,
+            }
+        ),
+        total_slots=1,
+    )
     return ProviderSelection(
         kind="llama_cpp",
         config_path="llama-cpp.yaml",
-        expected_identity=ProviderIdentity(
-            provider_type="llama_cpp",
-            implementation_version="llama-cpp-completion-http-v1",
-            model_alias="orchestration-test-model",
-            build_id="orchestration-test-build",
-            provider_config_hash=canonical_sha256(effective),
-            model_path="C:/models/orchestration-test.gguf",
-            model_sha256="b" * 64,
-            chat_template_sha256="c" * 64,
-        ),
+        expected_identity=llama_cpp_provider_identity(effective),
         expected_effective_configuration_json=canonical_json(effective),
     )
 
@@ -521,7 +555,7 @@ def test_full_five_arm_orchestration_is_positive_and_keeps_reset_attribution_onl
     assert all(item.unit_count == SEQUENCE_COUNT for item in result.recovery.metric_results)
     assert result.recovery.status is ScientificEvidenceStatus.PASS
     assert result.decision.decision is ScientificDecisionState.VALIDATED_POSITIVE
-    assert result.statistics_call_count == 15
+    assert result.statistics_call_count == 22
     assert context.claim_eligible is False
     assert context.causal_mechanism_validated is True
     assert canonical_sha256(result.model_dump(mode="json", exclude={"result_sha256"})) == (
@@ -529,11 +563,45 @@ def test_full_five_arm_orchestration_is_positive_and_keeps_reset_attribution_onl
     )
 
 
+def test_recovery_uses_the_frozen_worst_serious_comparator_margin() -> None:
+    plan = _plan()
+    records = tuple(
+        record.model_copy(update={"task_score": 1.0, "repetition_ratio": 0.0})
+        if record.policy_id == "best_static" and record.turn_index == 3
+        else record
+        for record in _records(plan)
+    )
+
+    result, _ = _analyze(plan, records)
+
+    assert plan.confirmatory_analysis is not None
+    recovery_spec = plan.confirmatory_analysis.recovery
+    assert recovery_spec.serious_comparator_ids == (
+        "best_static",
+        "heuristic_adaptive",
+    )
+    assert (
+        recovery_spec.comparator_reduction_version
+        == "per-unit-minimum-serious-comparator-margin-v1"
+    )
+    by_metric = {item.metric_name: item for item in result.recovery.metric_results}
+    assert by_metric[RecoveryMetricName.POST_STRESSOR_TASK_SCORE_CHANGE].estimate == pytest.approx(
+        -0.1
+    )
+    assert by_metric[RecoveryMetricName.POST_STRESSOR_REPETITION_CHANGE].estimate == pytest.approx(
+        -0.1
+    )
+    assert by_metric[RecoveryMetricName.TIME_TO_RETURN_TO_TARGET_BAND].estimate == 0.0
+    assert result.recovery.status is ScientificEvidenceStatus.DECISIVE_NEGATIVE
+    assert result.decision.decision is ScientificDecisionState.VALIDATED_NEGATIVE
+
+
 def test_confirmatory_envelope_rejects_analysis_and_decision_rebinding() -> None:
     plan = _plan()
     result, _ = _analyze(plan, _records(plan))
     assert plan.confirmatory_analysis is not None
     spec = plan.confirmatory_analysis
+    assert len(result.subgroup_effects) == 4
     assert ConfirmatoryAnalysisSpec.model_validate_json(spec.model_dump_json()) == spec
 
     invalid_events = (
@@ -570,6 +638,135 @@ def test_confirmatory_envelope_rejects_analysis_and_decision_rebinding() -> None
         )
     with pytest.raises(ValueError, match="auditable unit outcomes"):
         ConfirmatoryEvaluationResult.model_validate({**result_payload, "unit_outcomes": ()})
+    nonexact_coverage = CoverageResult(
+        exact=False,
+        expected_count=result.coverage.expected_count,
+        observed_count=result.coverage.observed_count - 1,
+    )
+    with pytest.raises(ValueError, match="exact condition coverage"):
+        ConfirmatoryEvaluationResult.model_validate(
+            {**result_payload, "coverage": nonexact_coverage}
+        )
+    availability_payload = {
+        **result.model_dump(mode="python", exclude={"result_sha256"}),
+        "optional_metric_availability": {
+            "semantic_similarity": (0, result.coverage.observed_count - 1)
+        },
+    }
+    with pytest.raises(ValueError, match="totals must match exact coverage"):
+        ConfirmatoryEvaluationResult.model_validate(
+            {
+                **availability_payload,
+                "result_sha256": confirmatory_result_sha256(availability_payload),
+            }
+        )
+    decoy_guardrails = tuple(
+        guardrail.model_copy(update={"scope": "decoy:scope"})
+        if guardrail.name == "provider_identity_stability"
+        else guardrail
+        for guardrail in result.guardrails
+    )
+    decoy_guardrail_payload = {
+        **result.model_dump(mode="python", exclude={"result_sha256"}),
+        "guardrails": decoy_guardrails,
+    }
+    with pytest.raises(ValueError, match="exact frozen scope set"):
+        ConfirmatoryEvaluationResult.model_validate(
+            {
+                **decoy_guardrail_payload,
+                "result_sha256": confirmatory_result_sha256(decoy_guardrail_payload),
+            }
+        )
+    foreign_recovery = (
+        result.recovery_unit_outcomes[0].model_copy(
+            update={
+                "unit_key": MatchedUnitKey(
+                    prompt_sequence_id="foreign-recovery",
+                    model_seed=999,
+                )
+            }
+        ),
+        *result.recovery_unit_outcomes[1:],
+    )
+    foreign_recovery_payload = {
+        **result.model_dump(mode="python", exclude={"result_sha256"}),
+        "recovery_unit_outcomes": foreign_recovery,
+    }
+    with pytest.raises(ValueError, match="exact event/seed keys"):
+        ConfirmatoryEvaluationResult.model_validate(
+            {
+                **foreign_recovery_payload,
+                "result_sha256": confirmatory_result_sha256(foreign_recovery_payload),
+            }
+        )
+    arbitrary_limitation_payload = {
+        **result.model_dump(mode="python", exclude={"result_sha256"}),
+        "limitations": (
+            *result.limitations,
+            result.limitations[0].model_copy(update={"code": "arbitrary_unbound_limitation"}),
+        ),
+    }
+    with pytest.raises(ValueError, match="limitations do not reconstruct"):
+        ConfirmatoryEvaluationResult.model_validate(
+            {
+                **arbitrary_limitation_payload,
+                "result_sha256": confirmatory_result_sha256(arbitrary_limitation_payload),
+            }
+        )
+    first_comparison = result.efficacy_comparisons[0]
+    assert first_comparison.negative_side_evidence is not None
+    tampered_negative = first_comparison.negative_side_evidence.model_copy(
+        update={
+            "bootstrap": first_comparison.negative_side_evidence.bootstrap.model_copy(
+                update={"resamples": 1, "seed": 999_999}
+            )
+        }
+    )
+    tampered_comparisons = (
+        first_comparison.model_copy(update={"negative_side_evidence": tampered_negative}),
+        *result.efficacy_comparisons[1:],
+    )
+    tampered_evidence_payload = {
+        **result.model_dump(mode="python", exclude={"result_sha256"}),
+        "efficacy_comparisons": tampered_comparisons,
+    }
+    with pytest.raises(ValueError, match="bootstrap evidence does not match the analysis spec"):
+        ConfirmatoryEvaluationResult.model_validate(
+            {
+                **tampered_evidence_payload,
+                "result_sha256": confirmatory_result_sha256(tampered_evidence_payload),
+            }
+        )
+    assert first_comparison.permutation is not None
+    tampered_permutation = first_comparison.permutation.model_copy(
+        update={"exact": False, "performed_permutations": 1}
+    )
+    permutation_comparisons = (
+        first_comparison.model_copy(update={"permutation": tampered_permutation}),
+        *result.efficacy_comparisons[1:],
+    )
+    permutation_payload = {
+        **result.model_dump(mode="python", exclude={"result_sha256"}),
+        "efficacy_comparisons": permutation_comparisons,
+    }
+    with pytest.raises(ValueError, match="evidence parameters do not match"):
+        ConfirmatoryEvaluationResult.model_validate(
+            {
+                **permutation_payload,
+                "result_sha256": confirmatory_result_sha256(permutation_payload),
+            }
+        )
+    tampered_count_payload = {
+        **result.model_dump(mode="python", exclude={"result_sha256"}),
+        "statistics_call_count": 0,
+    }
+    with pytest.raises(ValueError, match="statistics call count"):
+        ConfirmatoryEvaluationResult.model_validate(
+            {
+                **tampered_count_payload,
+                "result_sha256": confirmatory_result_sha256(tampered_count_payload),
+            }
+        )
     with pytest.raises(ValueError, match="does not hash the enclosed evidence"):
         ConfirmatoryEvaluationResult.model_validate(
             {
@@ -689,6 +886,16 @@ def test_orchestration_helpers_reject_foreign_contracts_and_malformed_evidence()
         scientific_analysis._require_confirmatory_plan(object())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="five-arm protocol"):
         scientific_analysis._require_confirmatory_plan(plan.model_copy(update={"protocol": None}))
+    with pytest.raises(ValueError, match="model-artifact SHA-256"):
+        scientific_analysis._require_confirmatory_plan(
+            plan.model_copy(
+                update={
+                    "provider_identity": plan.provider_identity.model_copy(
+                        update={"model_sha256": None}
+                    )
+                }
+            )
+        )
     with pytest.raises(ValueError, match="frozen analysis evidence"):
         scientific_analysis._require_confirmatory_plan(plan.model_copy(update={"evaluation": None}))
     with pytest.raises(ValueError, match="sealed evaluation dataset"):
@@ -788,7 +995,7 @@ def test_orchestration_helpers_reject_foreign_contracts_and_malformed_evidence()
         else record
         for record in records
     )
-    _, focal_censored, comparator_censored = scientific_analysis._recovery_evidence(
+    _, _, focal_censored, comparator_censored = scientific_analysis._recovery_evidence(
         returning_comparators,
         plan.confirmatory_analysis,
     )
@@ -802,13 +1009,21 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
     assert plan.preregistration is not None
     assert plan.dataset_seal is not None
     assert plan.dataset_purpose is DatasetPurpose.EVALUATION
+    assert plan.evaluation is not None
+    assert plan.evaluation_spec_sha256 is not None
     spec_hash = canonical_sha256(plan.confirmatory_analysis)
+    prompt_family_by_sequence = scientific_analysis._prompt_family_by_sequence(plan)
+    prompt_family_design_sha256 = canonical_sha256(prompt_family_by_sequence)
 
     rebuilt = confirmatory_analysis_contract_sha256(
         scientific_identity_sha256=plan.scientific_identity_sha256,
         preregistration_sha256=plan.preregistration.seal_sha256,
         confirmatory_analysis_spec=plan.confirmatory_analysis,
         confirmatory_analysis_spec_sha256=spec_hash,
+        evaluation_spec=plan.evaluation,
+        evaluation_spec_sha256=plan.evaluation_spec_sha256,
+        prompt_family_by_sequence=prompt_family_by_sequence,
+        prompt_family_design_sha256=prompt_family_design_sha256,
         dataset_sha256=plan.dataset_hash,
         dataset_purpose=plan.dataset_purpose,
         dataset_seal_sha256=plan.dataset_seal.seal_sha256,
@@ -821,6 +1036,25 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
             preregistration_sha256=plan.preregistration.seal_sha256,
             confirmatory_analysis_spec=plan.confirmatory_analysis,
             confirmatory_analysis_spec_sha256="f" * 64,
+            evaluation_spec=plan.evaluation,
+            evaluation_spec_sha256=plan.evaluation_spec_sha256,
+            prompt_family_by_sequence=prompt_family_by_sequence,
+            prompt_family_design_sha256=prompt_family_design_sha256,
+            dataset_sha256=plan.dataset_hash,
+            dataset_purpose=plan.dataset_purpose,
+            dataset_seal_sha256=plan.dataset_seal.seal_sha256,
+        )
+    drifted_evaluation = plan.evaluation.model_copy(update={"maximum_action_saturation_rate": 0.99})
+    with pytest.raises(ValueError, match="evaluation spec hash"):
+        confirmatory_analysis_contract_sha256(
+            scientific_identity_sha256=plan.scientific_identity_sha256,
+            preregistration_sha256=plan.preregistration.seal_sha256,
+            confirmatory_analysis_spec=plan.confirmatory_analysis,
+            confirmatory_analysis_spec_sha256=spec_hash,
+            evaluation_spec=drifted_evaluation,
+            evaluation_spec_sha256=plan.evaluation_spec_sha256,
+            prompt_family_by_sequence=prompt_family_by_sequence,
+            prompt_family_design_sha256=prompt_family_design_sha256,
             dataset_sha256=plan.dataset_hash,
             dataset_purpose=plan.dataset_purpose,
             dataset_seal_sha256=plan.dataset_seal.seal_sha256,
@@ -850,6 +1084,10 @@ def test_contract_is_recomputable_from_manifest_fields_and_real_path_rejects_fak
             preregistration_sha256=plan.preregistration.seal_sha256,
             confirmatory_analysis_spec=plan.confirmatory_analysis,
             confirmatory_analysis_spec_sha256=spec_hash,
+            evaluation_spec=plan.evaluation,
+            evaluation_spec_sha256=plan.evaluation_spec_sha256,
+            prompt_family_by_sequence=prompt_family_by_sequence,
+            prompt_family_design_sha256=prompt_family_design_sha256,
             dataset_sha256=plan.dataset_hash,
             dataset_purpose=DatasetPurpose.SYNTHETIC,
             dataset_seal_sha256=plan.dataset_seal.seal_sha256,

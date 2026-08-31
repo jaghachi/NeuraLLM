@@ -329,8 +329,10 @@ def build_run_manifest(
 
         phase3_analysis_contract_sha256 = build_phase3_analysis_contract_sha256(plan)
     if plan.protocol is not None and plan.protocol.run_tier is RunTier.CONFIRMATORY:
-        if provider_identity.provider_type != "llama_cpp":
-            raise ValueError("confirmatory execution requires the live llama_cpp provider")
+        if provider_identity.provider_type != "llama_cpp" or provider_identity.model_sha256 is None:
+            raise ValueError(
+                "confirmatory execution requires a digest-bound live llama_cpp provider"
+            )
         from neurallm.experiments.scientific_analysis import (
             build_confirmatory_analysis_contract_sha256,
         )
@@ -368,6 +370,8 @@ def build_run_manifest(
         decoding_bounds=plan.decoding_bounds,
         decision_rule_version=plan.decision_rule_version,
         database_schema_version=plan.database_schema_version,
+        evaluation_spec_json=(None if plan.evaluation is None else canonical_json(plan.evaluation)),
+        evaluation_spec_sha256=plan.evaluation_spec_sha256,
         phase3_analysis_contract_sha256=phase3_analysis_contract_sha256,
         run_tier=(None if plan.protocol is None else plan.protocol.run_tier.value),
         scientific_identity_sha256=(

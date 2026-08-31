@@ -34,7 +34,7 @@ ATTRIBUTION_HISTORY_SOURCE_POLICY_ID = FOCAL_POLICY_ID
 
 ENGINEERING_SMOKE_DECISION_RULE_VERSION = "engineering-smoke-no-scientific-decision-v1"
 DEVELOPMENT_PILOT_DECISION_RULE_VERSION = "development-pilot-no-scientific-decision-v1"
-CONFIRMATORY_DECISION_RULE_VERSION = "confirmatory-scientific-decision-v1"
+CONFIRMATORY_DECISION_RULE_VERSION = "confirmatory-scientific-decision-v2"
 
 
 class _StrictFrozenModel(BaseModel):

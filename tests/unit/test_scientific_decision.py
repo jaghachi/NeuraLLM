@@ -7,9 +7,13 @@ from collections.abc import Sequence
 import pytest
 from pydantic import ValidationError
 
+from neurallm.domain.serialization import canonical_sha256
 from neurallm.evaluation.scientific import (
     EFFICACY_COMPARATOR_IDS,
     REQUIRED_SCIENTIFIC_GUARDRAILS,
+    VALIDATED_NEGATIVE_ADJUSTED_CONFIDENCE_LEVEL,
+    VALIDATED_NEGATIVE_GATE_IDS,
+    VALIDATED_NEGATIVE_MULTIPLICITY_SHA256,
     ComparatorRole,
     EfficacyAnalysisSpec,
     EfficacyComparisonResult,
@@ -28,6 +32,7 @@ from neurallm.evaluation.scientific import (
     ScientificGuardrailStatus,
     ScientificLimitation,
     ScientificReasonCode,
+    ValidatedNegativeMultiplicitySpec,
     decide_scientific_outcome,
     evaluate_efficacy_comparisons,
     guardrail_clean_task_difference,
@@ -100,6 +105,68 @@ def test_final_decision_vocabulary_is_exact_and_case_sensitive() -> None:
         "INCONCLUSIVE",
         "INVALID_RUN",
     )
+
+
+def test_validated_negative_uses_a_separate_familywise_adjusted_evidence_family() -> None:
+    multiplicity = ValidatedNegativeMultiplicitySpec()
+    assert multiplicity.gate_ids == VALIDATED_NEGATIVE_GATE_IDS
+    assert multiplicity.adjusted_two_sided_confidence_level == pytest.approx(
+        VALIDATED_NEGATIVE_ADJUSTED_CONFIDENCE_LEVEL
+    )
+    assert canonical_sha256(multiplicity) == VALIDATED_NEGATIVE_MULTIPLICITY_SHA256
+    with pytest.raises(ValidationError, match="familywise alpha"):
+        ValidatedNegativeMultiplicitySpec(familywise_alpha=0.05000000004)
+    with pytest.raises(ValidationError, match="confidence must match"):
+        ValidatedNegativeMultiplicitySpec(
+            adjusted_two_sided_confidence_level=(
+                VALIDATED_NEGATIVE_ADJUSTED_CONFIDENCE_LEVEL + 1e-12
+            )
+        )
+
+    # Its nominal 95% upper bound is below 0.02, but its simultaneous
+    # seven-gate upper bound is not. The old unadjusted rule would have made a
+    # false VALIDATED_NEGATIVE gate; the frozen family leaves it inconclusive.
+    borderline = (0.01,) * 20 + (0.07,)
+    spec = EfficacyAnalysisSpec(
+        practical_effect_threshold=0.02,
+        bootstrap_resamples=10_000,
+        bootstrap_seed=17,
+        permutation_resamples=512,
+        permutation_seed=18,
+    )
+    results = evaluate_efficacy_comparisons(
+        {comparator_id: borderline for comparator_id in EFFICACY_COMPARATOR_IDS},
+        spec=spec,
+        negative_multiplicity=multiplicity,
+    )
+    assert all(result.status is ScientificEvidenceStatus.INCONCLUSIVE for result in results)
+    for result in results:
+        assert result.bootstrap is not None
+        assert result.negative_side_evidence is not None
+        assert result.bootstrap.confidence_level == 0.95
+        assert result.bootstrap.upper < spec.practical_effect_threshold
+        assert (
+            result.negative_side_evidence.bootstrap.confidence_level
+            == multiplicity.adjusted_two_sided_confidence_level
+        )
+        assert result.negative_side_evidence.bootstrap.upper >= spec.practical_effect_threshold
+        assert not result.negative_side_evidence.decisive_negative
+
+    decisive = evaluate_efficacy_comparisons(
+        {comparator_id: (0.0,) * 21 for comparator_id in EFFICACY_COMPARATOR_IDS},
+        spec=spec,
+        negative_multiplicity=multiplicity,
+    )
+    assert all(result.status is ScientificEvidenceStatus.DECISIVE_NEGATIVE for result in decisive)
+    evidence = decisive[0].negative_side_evidence
+    assert evidence is not None
+    with pytest.raises(ValidationError, match="frozen family contract"):
+        type(evidence).model_validate(
+            {
+                **evidence.model_dump(mode="python"),
+                "multiplicity_spec_sha256": "f" * 64,
+            }
+        )
 
 
 def test_guardrail_clean_task_score_gates_the_raw_score_without_imputation_or_blending() -> None:

@@ -61,6 +61,13 @@ Recovery is evaluated separately with exactly these three measures:
 - `post_stressor_repetition_change`; and
 - `time_to_return_to_target_band`.
 
+For every recovery event and model seed, the first two endpoints use focal minus
+comparator and time-to-return uses comparator minus focal, so every margin is
+positive when it favors `neural_persistent`. Each endpoint retains the minimum
+oriented margin across the exact serious comparator set (`best_static`,
+`heuristic_adaptive`). That worst-case reduction produces one matched-unit value;
+the two comparator margins are never averaged.
+
 Failure to return inside the preregistered window is represented as
 right-censored at window length plus one and counted explicitly. Persistent-
 state attribution pairs `neural_persistent` with
@@ -68,6 +75,61 @@ state attribution pairs `neural_persistent` with
 never enters the efficacy or Holm populations. Optional-metric missingness and
 oppositely resolved `prompt_family` subgroup effects are recorded as typed
 limitations with their preregistered disposition before the final decision.
+
+### Phase 5 negative-side multiplicity
+
+The stochastic gates that can establish `VALIDATED_NEGATIVE` form exactly one
+seven-member family:
+
+- efficacy against `best_static`, `heuristic_adaptive`, and `random_matched`;
+- the three required recovery endpoints; and
+- persistent-state attribution against
+  `neural_matched_history_state_reset`.
+
+Negative-side bootstraps use a Bonferroni simultaneous two-sided confidence of
+`1 - 0.05 / 7 = 0.9928571428571429`, which controls familywise error at `0.05`.
+Substantive deterministic guardrail failures, behavioral-alias findings, and
+focal right-censor failures are direct gates and do not enter this stochastic
+multiplicity family. Positive gates retain nominal 95% bootstrap intervals; the
+positive efficacy hypotheses against the two serious comparators retain Holm
+correction. The negative-side adjustment does not widen or replace either
+positive rule.
+
+Every confirmatory statistical result is loaded against the complete embedded
+`ConfirmatoryAnalysisSpec`; seeds, resample counts, confidence levels,
+permutation settings, and practical thresholds cannot drift independently of
+that frozen spec. Prompt-family sensitivity bootstraps are retained as typed
+subgroup results with their exact family assignment and unit count. The
+confirmatory `statistics_call_count` is therefore derived from persisted
+efficacy, recovery, attribution, and subgroup statistics instead of accepted as
+an unverified counter.
+
+The subgroup design itself is pre-execution evidence. Every prompt sequence must
+map to exactly one `prompt_family`; the canonical sequence-to-family mapping and
+its SHA-256 are repeated across the analysis contract, scientific manifest,
+result, and `decision.json`. Unit outcomes must cover those sequence keys and
+carry the same labels, so post hoc relabeling cannot manufacture or suppress a
+subgroup.
+
+Version 2 persists the raw efficacy, recovery, and attribution unit outcomes and
+the exact optional-metric availability counts. The evaluator recomputes the
+aggregates from those records and derives the complete limitation tuple from
+availability, censoring, and subgroup-conflict evidence. This closes both raw
+outcome substitution and limitation injection as decision inputs.
+
+The Phase 5 versions are an inseparable, incompatible envelope: decision rule
+`confirmatory-scientific-decision-v2`, analysis spec
+`confirmatory-analysis-v2`, result `confirmatory-evaluation-v2`, storage
+manifest `confirmatory-scientific-analysis-storage-v2`, and Phase 5
+`decision.json` schema 2. The physical SQLite schema stays at 2, but legacy v1
+scientific-analysis rows are rejected. Because the closed-run manifest is also
+bound to the v1 rule, there is no supported in-place migration or offline
+reanalyze path; current evidence requires a new v2 confirmatory workflow in a
+fresh run directory.
+
+The run manifest freezes the canonical `EvaluationSpec` JSON and SHA-256.
+Persistence recomputes guardrail status and thresholds from committed action,
+history, and metric evidence under that spec before accepting the result.
 
 ## Response-level provenance
 

@@ -12,13 +12,17 @@ from neurallm.domain.models import FiniteFloat, NonNegativeInt, PositiveInt, Sql
 from neurallm.evaluation.models import BootstrapResult, PermutationTestResult
 from neurallm.evaluation.scientific import (
     ATTRIBUTION_COMPARATOR_ID,
+    DEFAULT_VALIDATED_NEGATIVE_MULTIPLICITY,
     FOCAL_POLICY_ID,
+    NegativeSideEvidence,
     ScientificEvidenceGate,
     ScientificEvidenceKind,
     ScientificEvidenceStatus,
     ScientificFrozenModel,
     ScientificGuardrailResult,
     ScientificGuardrailStatus,
+    ValidatedNegativeMultiplicitySpec,
+    negative_side_evidence,
 )
 from neurallm.evaluation.statistics import (
     paired_bootstrap_ci,
@@ -56,6 +60,7 @@ class PersistentStateAttributionResult(ScientificFrozenModel):
     unit_count: NonNegativeInt
     mean_difference: FiniteFloat | None = None
     bootstrap: BootstrapResult | None = None
+    negative_side_evidence: NegativeSideEvidence | None = None
     permutation: PermutationTestResult | None = None
     practical_effect_threshold: float = Field(ge=0.0, allow_inf_nan=False)
     behavioral_alias: bool = False
@@ -96,7 +101,12 @@ class PersistentStateAttributionResult(ScientificFrozenModel):
         keys = tuple(guardrail.evidence_key for guardrail in self.causal_guardrails)
         if len(keys) != len(set(keys)):
             raise ValueError("attribution guardrails must be unique by name and scope")
-        statistics = (self.mean_difference, self.bootstrap, self.permutation)
+        statistics = (
+            self.mean_difference,
+            self.bootstrap,
+            self.negative_side_evidence,
+            self.permutation,
+        )
         if self.status is ScientificEvidenceStatus.INVALID:
             if any(value is not None for value in statistics):
                 raise ValueError("invalid attribution evidence must not contain statistics")
@@ -105,16 +115,33 @@ class PersistentStateAttributionResult(ScientificFrozenModel):
             raise ValueError("valid attribution evidence requires complete nonempty statistics")
         assert self.mean_difference is not None
         assert self.bootstrap is not None
+        assert self.negative_side_evidence is not None
         assert self.permutation is not None
         if (
             self.bootstrap.sample_size != self.unit_count
+            or self.negative_side_evidence.bootstrap.sample_size != self.unit_count
             or self.permutation.sample_size != self.unit_count
             or not isclose(self.mean_difference, self.bootstrap.estimate, abs_tol=1e-15)
+            or not isclose(
+                self.mean_difference,
+                self.negative_side_evidence.bootstrap.estimate,
+                abs_tol=1e-15,
+            )
             or not isclose(self.mean_difference, self.permutation.observed_mean, abs_tol=1e-15)
         ):
             raise ValueError("attribution statistics do not describe the same matched units")
+        if (
+            self.negative_side_evidence.gate_id != "attribution:neural_matched_history_state_reset"
+            or not isclose(
+                self.negative_side_evidence.practical_effect_threshold,
+                self.practical_effect_threshold,
+                abs_tol=1e-15,
+            )
+        ):
+            raise ValueError("attribution negative-side evidence targets the wrong frozen gate")
         expected = _classify_attribution(
             self.bootstrap,
+            self.negative_side_evidence,
             self.permutation,
             practical_effect_threshold=self.practical_effect_threshold,
             confidence_level=self.bootstrap.confidence_level,
@@ -140,6 +167,9 @@ def evaluate_persistent_state_attribution(
     persistent_minus_reset_differences: Sequence[float],
     *,
     spec: AttributionAnalysisSpec,
+    negative_multiplicity: ValidatedNegativeMultiplicitySpec = (
+        DEFAULT_VALIDATED_NEGATIVE_MULTIPLICITY
+    ),
     causal_guardrails: Sequence[ScientificGuardrailResult],
     behavioral_alias: bool = False,
 ) -> PersistentStateAttributionResult:
@@ -147,6 +177,8 @@ def evaluate_persistent_state_attribution(
 
     if not isinstance(spec, AttributionAnalysisSpec):
         raise TypeError("spec must be an AttributionAnalysisSpec")
+    if not isinstance(negative_multiplicity, ValidatedNegativeMultiplicitySpec):
+        raise TypeError("negative_multiplicity must be a ValidatedNegativeMultiplicitySpec")
     guardrails = tuple(causal_guardrails)
     invalid = any(guardrail.status is ScientificGuardrailStatus.INVALID for guardrail in guardrails)
     values = tuple(persistent_minus_reset_differences)
@@ -174,6 +206,14 @@ def evaluate_persistent_state_attribution(
             confidence_level=spec.confidence_level,
             seed=spec.bootstrap_seed,
         )
+        negative_evidence = negative_side_evidence(
+            values,
+            gate_id="attribution:neural_matched_history_state_reset",
+            practical_effect_threshold=spec.practical_effect_threshold,
+            resamples=spec.bootstrap_resamples,
+            seed=spec.bootstrap_seed,
+            multiplicity=negative_multiplicity,
+        )
         permutation = paired_sign_flip_permutation_test(
             values,
             resamples=spec.permutation_resamples,
@@ -190,6 +230,7 @@ def evaluate_persistent_state_attribution(
         )
     status = _classify_attribution(
         bootstrap,
+        negative_evidence,
         permutation,
         practical_effect_threshold=spec.practical_effect_threshold,
         confidence_level=spec.confidence_level,
@@ -211,6 +252,7 @@ def evaluate_persistent_state_attribution(
         unit_count=len(values),
         mean_difference=bootstrap.estimate,
         bootstrap=bootstrap,
+        negative_side_evidence=negative_evidence,
         permutation=permutation,
         practical_effect_threshold=spec.practical_effect_threshold,
         behavioral_alias=behavioral_alias,
@@ -222,6 +264,7 @@ def evaluate_persistent_state_attribution(
 
 def _classify_attribution(
     bootstrap: BootstrapResult,
+    negative_evidence: NegativeSideEvidence,
     permutation: PermutationTestResult,
     *,
     practical_effect_threshold: float,
@@ -244,7 +287,7 @@ def _classify_attribution(
         and permutation.p_value <= alpha
     ):
         return ScientificEvidenceStatus.PASS
-    if bootstrap.upper < practical_effect_threshold:
+    if negative_evidence.decisive_negative:
         return ScientificEvidenceStatus.DECISIVE_NEGATIVE
     return ScientificEvidenceStatus.INCONCLUSIVE
 

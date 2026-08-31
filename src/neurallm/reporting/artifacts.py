@@ -20,7 +20,7 @@ from neurallm.domain.models import (
     RunManifest,
 )
 from neurallm.domain.serialization import canonical_json, canonical_sha256
-from neurallm.evaluation.scientific import ScientificGuardrailResult
+from neurallm.evaluation.scientific import NegativeSideEvidence, ScientificGuardrailResult
 from neurallm.storage import (
     CURRENT_SCHEMA_VERSION,
     RunFinalization,
@@ -123,6 +123,15 @@ _PHASE5_COMPARISON_FIELDS = (
     "bootstrap_upper",
     "bootstrap_resamples",
     "bootstrap_seed",
+    "negative_multiplicity_method",
+    "negative_familywise_alpha",
+    "negative_family_size",
+    "negative_confidence_level",
+    "negative_bootstrap_lower",
+    "negative_bootstrap_upper",
+    "negative_bootstrap_resamples",
+    "negative_bootstrap_seed",
+    "negative_decisive",
     "permutation_p_value",
     "permutation_exact",
     "permutation_count",
@@ -138,7 +147,7 @@ _PHASE5_COMPARISON_FIELDS = (
 _PHASE2_DECISION_RULE_VERSION = "phase2-no-scientific-decision-v1"
 _PHASE3_DECISION_RULE_VERSION = "phase3-baseline-evaluator-v1"
 _PHASE4_DECISION_RULE_VERSION = "phase4-neural-mechanism-only-v1"
-_CONFIRMATORY_DECISION_RULE_VERSION = "confirmatory-scientific-decision-v1"
+_CONFIRMATORY_DECISION_RULE_VERSION = "confirmatory-scientific-decision-v2"
 _MODEL_BACKED_NONSCIENTIFIC_RULE_TIERS = {
     "engineering-smoke-no-scientific-decision-v1": "engineering_smoke",
     "development-pilot-no-scientific-decision-v1": "development_pilot",
@@ -747,6 +756,7 @@ def _phase5_comparison_rows(
     rows: list[dict[str, object]] = []
     for comparison in analysis.result.efficacy_comparisons:
         bootstrap = comparison.bootstrap
+        negative = comparison.negative_side_evidence
         permutation = comparison.permutation
         rows.append(
             {
@@ -767,6 +777,7 @@ def _phase5_comparison_rows(
                 "bootstrap_upper": "" if bootstrap is None else bootstrap.upper,
                 "bootstrap_resamples": "" if bootstrap is None else bootstrap.resamples,
                 "bootstrap_seed": "" if bootstrap is None else bootstrap.seed,
+                **_negative_side_fields(negative),
                 "permutation_p_value": "" if permutation is None else permutation.p_value,
                 "permutation_exact": "" if permutation is None else permutation.exact,
                 "permutation_count": (
@@ -786,6 +797,7 @@ def _phase5_comparison_rows(
 
     attribution = analysis.result.attribution
     bootstrap = attribution.bootstrap
+    negative = attribution.negative_side_evidence
     permutation = attribution.permutation
     rows.append(
         {
@@ -806,6 +818,7 @@ def _phase5_comparison_rows(
             "bootstrap_upper": "" if bootstrap is None else bootstrap.upper,
             "bootstrap_resamples": "" if bootstrap is None else bootstrap.resamples,
             "bootstrap_seed": "" if bootstrap is None else bootstrap.seed,
+            **_negative_side_fields(negative),
             "permutation_p_value": "" if permutation is None else permutation.p_value,
             "permutation_exact": "" if permutation is None else permutation.exact,
             "permutation_count": (
@@ -827,6 +840,32 @@ def _phase5_comparison_rows(
     return tuple(rows)
 
 
+def _negative_side_fields(evidence: NegativeSideEvidence | None) -> dict[str, object]:
+    if evidence is None:
+        return {
+            "negative_multiplicity_method": "",
+            "negative_familywise_alpha": "",
+            "negative_family_size": "",
+            "negative_confidence_level": "",
+            "negative_bootstrap_lower": "",
+            "negative_bootstrap_upper": "",
+            "negative_bootstrap_resamples": "",
+            "negative_bootstrap_seed": "",
+            "negative_decisive": "",
+        }
+    return {
+        "negative_multiplicity_method": evidence.method_version,
+        "negative_familywise_alpha": evidence.familywise_alpha,
+        "negative_family_size": evidence.family_size,
+        "negative_confidence_level": evidence.adjusted_two_sided_confidence_level,
+        "negative_bootstrap_lower": evidence.bootstrap.lower,
+        "negative_bootstrap_upper": evidence.bootstrap.upper,
+        "negative_bootstrap_resamples": evidence.bootstrap.resamples,
+        "negative_bootstrap_seed": evidence.bootstrap.seed,
+        "negative_decisive": evidence.decisive_negative,
+    }
+
+
 def _phase5_decision_payload(
     manifest: RunManifest,
     finalization: RunFinalization,
@@ -840,7 +879,7 @@ def _phase5_decision_payload(
         raise ValueError("confirmatory closeout lacks durable execution accounting")
     result = analysis.result
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "implementation_phase": 5,
         "run_tier": "confirmatory",
         "claim_scope": result.claim_scope,
@@ -852,6 +891,11 @@ def _phase5_decision_payload(
         "analysis_manifest_sha256": canonical_sha256(analysis.manifest),
         "analysis_finalization_sha256": canonical_sha256(analysis.finalization),
         "confirmatory_analysis_contract_sha256": (manifest.confirmatory_analysis_contract_sha256),
+        "confirmatory_analysis_spec": result.confirmatory_analysis_spec.model_dump(mode="json"),
+        "confirmatory_analysis_spec_sha256": result.confirmatory_analysis_spec_sha256,
+        "prompt_family_by_sequence": dict(result.prompt_family_by_sequence),
+        "prompt_family_design_sha256": result.prompt_family_design_sha256,
+        "validated_negative_multiplicity_sha256": (result.validated_negative_multiplicity_sha256),
         "scientific_identity_sha256": manifest.scientific_identity_sha256,
         "preregistration_sha256": manifest.preregistration_sha256,
         "evaluation_input_sha256": result.input_sha256,
@@ -867,6 +911,9 @@ def _phase5_decision_payload(
         ),
         "recovery": result.recovery.model_dump(mode="json"),
         "persistent_state_attribution": result.attribution.model_dump(mode="json"),
+        "subgroup_effects": tuple(
+            effect.model_dump(mode="json") for effect in result.subgroup_effects
+        ),
         "guardrails": tuple(guardrail.model_dump(mode="json") for guardrail in result.guardrails),
         "limitations": tuple(
             limitation.model_dump(mode="json") for limitation in result.limitations
@@ -1003,6 +1050,24 @@ def _phase5_effect_text(
     return f"mean difference `{estimate:.6f}`, CI `[{lower:.6f}, {upper:.6f}]`"
 
 
+def _phase5_negative_evidence_text(evidence: NegativeSideEvidence | None) -> str:
+    """Render the separately adjusted evidence used by VALIDATED_NEGATIVE gates."""
+
+    if evidence is None:
+        return "adjusted negative-side evidence unavailable"
+    decisive = str(evidence.decisive_negative).lower()
+    return (
+        f"adjusted negative-side evidence `{evidence.gate_id}` via "
+        f"`{evidence.method_version}`: familywise alpha "
+        f"`{evidence.familywise_alpha:.6f}` across `{evidence.family_size}` gates, "
+        "adjusted two-sided confidence "
+        f"`{evidence.adjusted_two_sided_confidence_level:.6f}`, simultaneous CI "
+        f"`[{evidence.bootstrap.lower:.6f}, {evidence.bootstrap.upper:.6f}]`, "
+        f"practical threshold `{evidence.practical_effect_threshold:.6f}`, "
+        f"decisive negative `{decisive}`"
+    )
+
+
 def _phase5_confirmatory_report_text(
     manifest: RunManifest,
     finalization: RunFinalization,
@@ -1026,6 +1091,8 @@ def _phase5_confirmatory_report_text(
                 None if bootstrap is None else bootstrap.lower,
                 None if bootstrap is None else bootstrap.upper,
             )
+            + "; "
+            + _phase5_negative_evidence_text(comparison.negative_side_evidence)
             + "."
         )
     recovery_lines = [
@@ -1036,7 +1103,8 @@ def _phase5_confirmatory_report_text(
     ]
     recovery_lines.extend(
         f"- `{metric.metric_name.value}`: `{metric.status.value}`; "
-        f"{_phase5_effect_text(metric.estimate, metric.bootstrap.lower, metric.bootstrap.upper)}."
+        f"{_phase5_effect_text(metric.estimate, metric.bootstrap.lower, metric.bootstrap.upper)}; "
+        f"{_phase5_negative_evidence_text(metric.negative_side_evidence)}."
         for metric in result.recovery.metric_results
     )
     attribution = result.attribution
@@ -1049,7 +1117,8 @@ def _phase5_confirmatory_report_text(
     attribution_lines = (
         f"- `{attribution.focal_policy_id}` vs `{attribution.comparator_policy_id}`: "
         f"`{attribution.status.value}`; "
-        f"{attribution_effect_text}.\n"
+        f"{attribution_effect_text}; "
+        f"{_phase5_negative_evidence_text(attribution.negative_side_evidence)}.\n"
         "- This matched-history reset comparison is attribution-only, excludes turn zero, "
         "and is not an efficacy baseline or Holm-family member."
     )
@@ -1071,6 +1140,22 @@ def _phase5_confirmatory_report_text(
     )
     efficacy_text = "\n".join(efficacy_lines)
     recovery_text = "\n".join(recovery_lines)
+    subgroup_lines = []
+    for effect in result.subgroup_effects:
+        effect_text = _phase5_effect_text(
+            effect.bootstrap.estimate,
+            effect.bootstrap.lower,
+            effect.bootstrap.upper,
+        )
+        subgroup_lines.append(
+            f"- Subgroup `{effect.field_name}={effect.field_value}` vs "
+            f"`{effect.comparator_policy_id}`: `{effect.direction}`; {effect_text}."
+        )
+    subgroup_text = (
+        "\n".join(subgroup_lines)
+        if subgroup_lines
+        else "- No multi-level preregistered subgroup analysis was required."
+    )
     reason_codes = ", ".join(f"`{reason.value}`" for reason in result.decision.reason_codes)
     return (
         "# NeuraLLM Phase 5 Confirmatory Scientific Report\n\n"
@@ -1090,12 +1175,14 @@ def _phase5_confirmatory_report_text(
         f"{accounting.dispatched_logical_generations}/"
         f"{accounting.successful_responses}/"
         f"{accounting.committed_logical_generations}`; uncertain: "
-        f"`{accounting.uncertain_dispatches}`\n\n"
+        f"`{accounting.uncertain_dispatches}`\n"
+        f"- Persisted statistical computations: `{result.statistics_call_count}`\n\n"
         "## Controller activity\n\n"
         f"{_model_backed_activity_lines(manifest, turns)}\n\n"
         "## End-to-end efficacy\n\n"
         f"{efficacy_text}\n"
-        f"{recovery_text}\n\n"
+        f"{recovery_text}\n"
+        f"{subgroup_text}\n\n"
         "## Persistent-state attribution\n\n"
         f"{attribution_lines}\n\n"
         "## Guardrail outcomes\n\n"

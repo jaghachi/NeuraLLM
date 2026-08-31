@@ -45,11 +45,15 @@ def _write_llama_experiment(tmp_path: Path, *, write_provider: bool) -> tuple[Pa
     )
     payload["artifact_root"] = str(tmp_path / "run")
     provider_path = tmp_path / "llama.yaml"
+    model_path = tmp_path / "test-model.gguf"
+    model_bytes = b"zero-network workflow model fixture"
+    model_path.write_bytes(model_bytes)
     template = "{% for message in messages %}{{ message.content }}{% endfor %}"
     provider_config = LlamaCppProviderConfig(
         base_url="http://127.0.0.1:8080",
         model_alias="test-model",
-        model_path="C:/models/test.gguf",
+        model_path=str(model_path.resolve()),
+        model_sha256=sha256(model_bytes).hexdigest(),
         build_id="test-build",
         chat_template_sha256=sha256(template.encode("utf-8")).hexdigest(),
         connect_timeout_seconds=1.0,
@@ -69,6 +73,7 @@ def _write_llama_experiment(tmp_path: Path, *, write_provider: bool) -> tuple[Pa
         client_config=provider_config,
         model_alias=provider_config.model_alias,
         model_path=provider_config.model_path,
+        model_sha256=provider_config.model_sha256,
         build_id=provider_config.build_id,
         chat_template=template,
         chat_template_sha256=provider_config.chat_template_sha256,
@@ -82,6 +87,7 @@ def _write_llama_experiment(tmp_path: Path, *, write_provider: bool) -> tuple[Pa
         build_id=effective.build_id,
         provider_config_hash=canonical_sha256(effective),
         model_path=effective.model_path,
+        model_sha256=effective.model_sha256,
         chat_template_sha256=effective.chat_template_sha256,
     )
     payload["provider"] = {
@@ -490,7 +496,10 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
         run_manifest_sha256="7" * 64,
         run_finalization_sha256="8" * 64,
     )
-    result = object()
+    result = SimpleNamespace(
+        prompt_family_by_sequence={"sequence-a": "family-a"},
+        prompt_family_design_sha256="9" * 64,
+    )
     execution = object()
     artifacts = object()
     prepared = SimpleNamespace(
@@ -520,6 +529,7 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
             build_id="workflow-test-build",
             provider_config_hash="9" * 64,
             model_path="C:/models/workflow-test.gguf",
+            model_sha256="8" * 64,
             chat_template_sha256="a" * 64,
         )
 
@@ -528,6 +538,9 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
 
         def close(self) -> None:
             self.closed = True
+
+        def verify_model_artifact(self) -> None:
+            persisted["model_verified"] = True
 
     provider = StubLlamaCppProvider()
     run_manifest = object()
@@ -583,10 +596,15 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
     monkeypatch.setattr(workflow, "construct_provider", lambda _loaded: provider)
     monkeypatch.setattr(workflow, "build_run_manifest", lambda *_args: run_manifest)
     monkeypatch.setattr(workflow, "execute_plan", lambda *_args: execution)
+
+    def analyze_after_model_verification(_plan: object, _database: Path) -> tuple[object, object]:
+        assert persisted["model_verified"] is True
+        return result, context
+
     monkeypatch.setattr(
         workflow,
         "analyze_closed_confirmatory_run",
-        lambda _plan, _database: (result, context),
+        analyze_after_model_verification,
     )
     monkeypatch.setattr(workflow, "ScientificAnalysisManifest", capture_analysis_manifest)
     monkeypatch.setattr(workflow, "SQLiteRunStore", StubStore)
@@ -604,6 +622,7 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
         "manifest": analysis_manifest,
         "result": result,
         "context": context,
+        "model_verified": True,
         "verified": True,
         "compacted": True,
     }
@@ -618,6 +637,8 @@ def test_confirmatory_workflow_persists_and_forwards_exact_claim_context(
         "confirmatory_analysis_contract_sha256": context.analysis_contract_sha256,
         "confirmatory_analysis_spec": spec,
         "confirmatory_analysis_spec_sha256": "c" * 64,
+        "prompt_family_by_sequence": result.prompt_family_by_sequence,
+        "prompt_family_design_sha256": result.prompt_family_design_sha256,
         "dataset_sha256": dataset_sha256,
         "dataset_purpose": DatasetPurpose.EVALUATION,
         "dataset_seal_sha256": dataset_seal_sha256,

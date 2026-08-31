@@ -120,6 +120,51 @@ claim-eligible closed confirmatory run may emit exactly one of
 The code path is implemented and tested offline; none of those states is an
 observed project result yet.
 
+Each recovery endpoint contributes one value per frozen recovery event and
+model seed. Every focal/comparator margin is oriented so a positive value favors
+`neural_persistent`; the evaluator then retains the minimum margin across the
+exact serious comparators `best_static` and `heuristic_adaptive`. It never uses
+their mean.
+
+The stochastic negative-side gates for `VALIDATED_NEGATIVE` form one exact
+seven-member family: three efficacy gates, three recovery gates, and one
+persistent-state attribution gate. Their Bonferroni simultaneous two-sided
+confidence is `1 - 0.05 / 7 = 0.9928571428571429`, controlling familywise error
+at `0.05`. Substantive deterministic guardrail failures, behavioral aliasing,
+and focal right-censor failures are direct decision gates outside that
+multiplicity family. Positive gates retain nominal 95% bootstrap intervals, and
+the serious-comparator efficacy hypotheses retain Holm correction.
+
+The confirmatory result envelope retains the complete preregistered analysis
+spec and its hash. Every nominal bootstrap, adjusted negative bootstrap, and
+permutation result must match that spec's seed and resample count when loaded.
+Prompt-family sensitivity bootstraps are persisted as typed subgroup evidence,
+so `statistics_call_count` is recomputed from the enclosed evidence rather than
+trusted as an editable summary.
+
+Before execution, the plan must resolve every prompt sequence to exactly one
+`prompt_family`. The canonical sequence-to-family mapping and its SHA-256 are
+bound into the analysis contract, storage manifest, result, and exported
+decision. Version 2 also persists the exact efficacy, recovery, and attribution
+unit outcomes and optional-metric availability; aggregates and the complete
+typed limitation set are recomputed from that evidence instead of accepted as
+editable summaries.
+
+The current Phase 5 envelope is intentionally incompatible with its provisional
+v1 form: decision rule `confirmatory-scientific-decision-v2`, analysis spec
+`confirmatory-analysis-v2`, result `confirmatory-evaluation-v2`, scientific
+storage manifest `confirmatory-scientific-analysis-storage-v2`, and Phase 5
+`decision.json` schema 2 move together. The physical SQLite schema remains 2,
+but legacy v1 scientific-analysis rows are rejected rather than migrated. A
+legacy run manifest is also bound to the v1 rule, so there is no in-place
+reanalyze path. A current claim requires a new v2 confirmatory workflow in a
+fresh run directory.
+
+The pre-execution run manifest carries the canonical `EvaluationSpec` JSON and
+its SHA-256. Scientific persistence uses that frozen threshold contract to
+recompute guardrail status and thresholds from committed traces and metrics;
+resealing an internally consistent but source-false decision is rejected.
+
 ## Install
 
 Python 3.12 is required. The intended local environment is:
@@ -145,7 +190,8 @@ the provider-free and explicitly gated portions of the Phase 5 protocol:
 
 Before using the llama.cpp commands, copy the checked-in examples to ignored
 machine-local files and replace every placeholder with values from the same
-local server and model:
+local server and model. The provider configuration requires the lowercase
+SHA-256 of the complete model artifact at an absolute client-readable path:
 
 ```powershell
 Copy-Item configs/providers/llama_cpp.example.yaml configs/providers/llama_cpp.local.yaml
@@ -168,8 +214,9 @@ neurallm analyze --run-dir runs/phase3-synthetic-evaluator-validation
 neurallm report --run-dir runs/phase3-synthetic-evaluator-validation
 ```
 
-`preflight` deliberately performs only llama.cpp identity inspection through
-`/health` and `/props`; it never requests a completion. `preregister`,
+`preflight` deliberately hashes the local model artifact and performs only
+llama.cpp identity inspection through `/health` and `/props`; it never requests
+a completion. `preregister`,
 `validate`, `plan`, and `run --dry-run` validate or freeze declared inputs
 without constructing a generation provider. They cover the complete schedule,
 development-selection evidence, dataset identity, seal when required, policy
@@ -178,9 +225,16 @@ contract.
 
 `run --execute` is the explicit provider boundary. A llama.cpp run additionally
 requires `--allow-live-provider`; omission fails before provider construction or
-HTTP. A claim-eligible confirmatory run must use llama.cpp and, after complete
-execution, is analyzed, atomically persisted, read back, and exported only when
-all frozen identity and integrity gates pass. The checked-in executable Phase 3,
+HTTP. A claim-eligible confirmatory run must use digest-bound llama.cpp identity.
+Full artifact hashes at construction and immediately before scientific
+persistence/export are point-in-time measurements. The metadata fingerprint
+checked before each dispatch catches ordinary replacements and triggers a full
+rehash, but it is not cryptographic proof of the bytes at every dispatch. The
+claim boundary therefore assumes a trusted same-host operator who excludes a
+transient same-size rewrite whose identity and modification time are restored
+between checks. After complete execution, the run is analyzed, atomically
+persisted, read back, and exported only when all frozen identity and integrity
+gates pass. The checked-in executable Phase 3,
 smoke, and pilot configurations select only the deterministic fake provider;
 the llama.cpp examples retain deliberate machine-local placeholders.
 

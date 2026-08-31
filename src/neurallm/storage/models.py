@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from neurallm.domain.models import (
     ExperimentCondition,
@@ -252,9 +261,9 @@ class ScientificAnalysisManifest(BaseModel):
         validate_default=True,
     )
 
-    schema_version: Literal[1] = 1
-    implementation_version: Literal["confirmatory-scientific-analysis-storage-v1"] = (
-        "confirmatory-scientific-analysis-storage-v1"
+    schema_version: Literal[2] = 2
+    implementation_version: Literal["confirmatory-scientific-analysis-storage-v2"] = (
+        "confirmatory-scientific-analysis-storage-v2"
     )
     claim_eligible: Literal[True] = True
     causal_mechanism_validated: Literal[True] = True
@@ -266,6 +275,8 @@ class ScientificAnalysisManifest(BaseModel):
     confirmatory_analysis_contract_sha256: Sha256Hex
     confirmatory_analysis_spec: ConfirmatoryAnalysisSpec
     confirmatory_analysis_spec_sha256: Sha256Hex
+    prompt_family_by_sequence: Mapping[NonEmptyString, NonEmptyString]
+    prompt_family_design_sha256: Sha256Hex
     dataset_sha256: Sha256Hex
     dataset_purpose: DatasetPurpose = DatasetPurpose.EVALUATION
     dataset_seal_sha256: Sha256Hex
@@ -277,6 +288,20 @@ class ScientificAnalysisManifest(BaseModel):
         if isinstance(value, str):
             return DatasetPurpose(value)
         return value
+
+    @field_validator("prompt_family_by_sequence")
+    @classmethod
+    def _freeze_prompt_family_design(
+        cls,
+        values: Mapping[str, str],
+    ) -> Mapping[str, str]:
+        if not values:
+            raise ValueError("scientific analysis requires a prompt-family design")
+        return MappingProxyType(dict(sorted(values.items())))
+
+    @field_serializer("prompt_family_by_sequence")
+    def _serialize_prompt_family_design(self, values: Mapping[str, str]) -> dict[str, str]:
+        return dict(values)
 
     @model_validator(mode="after")
     def validate_confirmatory_contract(self) -> Self:
@@ -290,6 +315,8 @@ class ScientificAnalysisManifest(BaseModel):
             raise ValueError(
                 "confirmatory analysis spec hash does not match its canonical evidence"
             )
+        if self.prompt_family_design_sha256 != canonical_sha256(self.prompt_family_by_sequence):
+            raise ValueError("prompt-family design hash does not match its canonical evidence")
         return self
 
 

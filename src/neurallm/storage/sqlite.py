@@ -12,15 +12,22 @@ from typing import Any, TypeVar, cast
 from pydantic import BaseModel, ValidationError
 
 from neurallm.control.policy import PolicyState, PolicyTrace
-from neurallm.domain.models import ExperimentCondition, ResponseMetrics, RunManifest
+from neurallm.domain.models import ActionBounds, ExperimentCondition, ResponseMetrics, RunManifest
 from neurallm.domain.serialization import canonical_json, canonical_sha256
+from neurallm.evaluation.aggregation import aggregate_matched_units, validate_exact_coverage
 from neurallm.evaluation.attribution import PersistentStateAttributionResult
 from neurallm.evaluation.confirmatory import ConfirmatoryEvaluationResult
 from neurallm.evaluation.contract import phase3_analysis_contract_sha256
 from neurallm.evaluation.models import (
+    CoverageResult,
+    DatasetPurpose,
+    EvaluationSpec,
+    ExpectedEvaluationDesign,
     GuardrailResult,
     PairwiseComparisonResult,
     Phase3EvaluationResult,
+    SequenceExpectation,
+    TurnEvaluationRecord,
 )
 from neurallm.evaluation.scientific import (
     EfficacyComparisonResult,
@@ -31,6 +38,7 @@ from neurallm.providers.base import (
     GenerationResponse,
     effective_parameters_match_request,
 )
+from neurallm.providers.llama_cpp import require_llama_cpp_provider_binding
 from neurallm.storage.errors import (
     DuplicateLogicalRequestError,
     HistoryMismatchError,
@@ -68,11 +76,154 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 PolicyStateT = TypeVar("PolicyStateT", bound=PolicyState)
 
 _PHASE3_ANALYSIS_IMPLEMENTATION_VERSION = "phase3-analysis-storage-v1"
-_SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION = "confirmatory-scientific-analysis-storage-v1"
+_LEGACY_SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION = "confirmatory-scientific-analysis-storage-v1"
+_SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION = "confirmatory-scientific-analysis-storage-v2"
 _SUPPORTED_ANALYSIS_IMPLEMENTATION_VERSIONS = {
     _PHASE3_ANALYSIS_IMPLEMENTATION_VERSION,
     _SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION,
 }
+_SCIENTIFIC_UNIT_POLICY_IDS = frozenset(
+    {"best_static", "heuristic_adaptive", "neural_persistent", "random_matched"}
+)
+_SCIENTIFIC_MODEL_BACKED_POLICY_IDS = _SCIENTIFIC_UNIT_POLICY_IDS | {
+    "neural_matched_history_state_reset"
+}
+
+
+def _stored_scientific_records(
+    turns: tuple[StoredTurn, ...],
+    *,
+    dataset_sha256: str,
+    action_bounds: ActionBounds,
+) -> tuple[TurnEvaluationRecord, ...]:
+    """Reconstruct raw model-backed evaluator records from committed turn metrics."""
+
+    records: list[TurnEvaluationRecord] = []
+    for turn in turns:
+        condition = turn.condition
+        if condition.policy_id not in _SCIENTIFIC_MODEL_BACKED_POLICY_IDS:
+            continue
+        metrics = turn.metrics
+        if turn.state is not TurnState.COMMITTED or metrics is None:
+            raise ValueError("scientific unit evidence requires committed turn metrics")
+        task_score = metrics.task_score.value
+        instruction_adherence = metrics.instruction_adherence.value
+        response_length_tokens = metrics.response_length_tokens.value
+        repetition_ratio = metrics.repetition_ratio.value
+        if (
+            task_score is None
+            or instruction_adherence is None
+            or response_length_tokens is None
+            or repetition_ratio is None
+        ):
+            raise ValueError("scientific unit evidence requires every primary metric")
+        from neurallm.experiments.analysis import _trace_evidence
+
+        try:
+            (
+                action_magnitude,
+                action_within_bounds,
+                action_saturated,
+                observation_has_previous_response,
+            ) = _trace_evidence(turn, action_bounds)
+        except StoreInvariantError as exc:
+            raise ValueError(f"scientific action evidence is invalid: {exc}") from exc
+        if (turn.history is not None) != (condition.turn_index > 0):
+            raise ValueError("scientific history evidence disagrees with the logical turn")
+        previous_commitment = (
+            None
+            if not observation_has_previous_response or turn.history is None
+            else turn.history.previous_history_commitment_sha256
+        )
+        records.append(
+            TurnEvaluationRecord(
+                dataset_sha256=dataset_sha256,
+                prompt_sequence_id=condition.prompt_sequence_id,
+                turn_index=condition.turn_index,
+                policy_id=condition.policy_id,
+                model_seed=condition.model_seed,
+                controller_seed=condition.controller_seed,
+                provider_identity_id=condition.provider_identity_id,
+                has_previous_response=observation_has_previous_response,
+                previous_history_commitment_sha256=previous_commitment,
+                task_score=float(task_score),
+                instruction_adherence=float(instruction_adherence),
+                response_length_tokens=int(response_length_tokens),
+                repetition_ratio=float(repetition_ratio),
+                action_magnitude=action_magnitude,
+                action_within_bounds=action_within_bounds,
+                action_saturated=action_saturated,
+            )
+        )
+    return tuple(records)
+
+
+def _stored_scientific_unit_metrics(
+    records: tuple[TurnEvaluationRecord, ...],
+) -> dict[tuple[str, int, str], tuple[float, float, float, float]]:
+    """Aggregate the four efficacy-arm raw metrics at the frozen matched unit."""
+
+    outcomes = aggregate_matched_units(
+        tuple(record for record in records if record.policy_id in _SCIENTIFIC_UNIT_POLICY_IDS)
+    )
+    return {
+        (
+            outcome.unit_key.prompt_sequence_id,
+            outcome.unit_key.model_seed,
+            outcome.policy_id,
+        ): (
+            outcome.task_score,
+            outcome.instruction_adherence,
+            outcome.repetition_ratio,
+            outcome.response_length_tokens,
+        )
+        for outcome in outcomes
+    }
+
+
+def _source_scientific_guardrails(
+    records: tuple[TurnEvaluationRecord, ...],
+    *,
+    run_manifest: RunManifest,
+    dataset_seal_sha256: str,
+    evaluation_spec: EvaluationSpec,
+) -> tuple[CoverageResult, tuple[ScientificGuardrailResult, ...]]:
+    """Recompute claim-bearing guardrails from committed source evidence."""
+
+    if (
+        evaluation_spec.focal_policy_id != "neural_persistent"
+        or evaluation_spec.required_serious_comparator_ids != ("best_static", "heuristic_adaptive")
+        or evaluation_spec.negative_control_policy_ids != ("random_matched",)
+    ):
+        raise ValueError("confirmatory evaluation spec has the wrong frozen policy roles")
+    sequence_indexes: dict[str, set[int]] = {}
+    for record in records:
+        sequence_indexes.setdefault(record.prompt_sequence_id, set()).add(record.turn_index)
+    if not sequence_indexes or any(
+        indexes != set(range(len(indexes))) for indexes in sequence_indexes.values()
+    ):
+        raise ValueError("committed sequence turn indexes are not contiguous from zero")
+    design = ExpectedEvaluationDesign(
+        dataset_purpose=DatasetPurpose.EVALUATION,
+        dataset_sha256=run_manifest.dataset_hash,
+        dataset_seal_sha256=dataset_seal_sha256,
+        provider_identity_id=run_manifest.provider_identity.identity_id,
+        sequences=tuple(
+            SequenceExpectation(prompt_sequence_id=sequence_id, turn_count=len(indexes))
+            for sequence_id, indexes in sorted(sequence_indexes.items())
+        ),
+        model_seeds=run_manifest.seed_schedule.model_seeds,
+        controller_seeds=run_manifest.seed_schedule.controller_seeds,
+        policy_ids=tuple(run_manifest.policy_config_hashes),
+    )
+    coverage = validate_exact_coverage(records, design)
+    if not coverage.exact:
+        raise ValueError("committed turns do not cover the exact confirmatory design")
+
+    from neurallm.experiments.scientific_analysis import _scientific_guardrails_from_records
+
+    return coverage, _scientific_guardrails_from_records(records, design, evaluation_spec)
+
 
 _EXPECTED_SCHEMA_OBJECTS = {
     ("table", "analysis_decision"),
@@ -1480,6 +1631,11 @@ class SQLiteRunStore:
             raise StoreCorruptionError(
                 "analysis manifest has no string implementation_version discriminant"
             )
+        if implementation_version == _LEGACY_SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION:
+            raise StoreCorruptionError(
+                "legacy confirmatory scientific analysis v1 is incompatible with the "
+                "contract-bound v2 evidence envelope; rerun the analysis"
+            )
         if implementation_version not in _SUPPORTED_ANALYSIS_IMPLEMENTATION_VERSIONS:
             raise StoreCorruptionError("analysis manifest has an unknown implementation_version")
         return implementation_version
@@ -1675,14 +1831,175 @@ class SQLiteRunStore:
             fail("scientific analysis requires durable execution accounting")
         if (
             run_manifest.database_schema_version != CURRENT_SCHEMA_VERSION
-            or run_manifest.decision_rule_version != "confirmatory-scientific-decision-v1"
+            or run_manifest.decision_rule_version != "confirmatory-scientific-decision-v2"
             or run_manifest.run_tier != "confirmatory"
             or not run_manifest.working_tree_clean
             or run_manifest.confirmatory_analysis_contract_sha256 is None
         ):
             fail("scientific analysis requires a schema-v2 confirmatory run manifest")
-        if run_manifest.provider_identity.provider_type != "llama_cpp":
-            fail("scientific analysis requires the explicit llama_cpp provider")
+        if (
+            run_manifest.provider_identity.provider_type != "llama_cpp"
+            or run_manifest.provider_identity.model_sha256 is None
+        ):
+            fail("scientific analysis requires a digest-bound llama_cpp provider")
+        try:
+            require_llama_cpp_provider_binding(
+                run_manifest.provider_identity,
+                run_manifest.provider_effective_configuration_json,
+            )
+        except (TypeError, ValueError) as exc:
+            fail(
+                "scientific analysis requires internally consistent digest-bound "
+                f"llama_cpp provider evidence: {exc}"
+            )
+            return
+        stored_turns = self.list_turns()
+        stored_inputs = self.list_turn_inputs()
+        turn_by_id = {turn.condition_id: turn for turn in stored_turns}
+        input_by_id = {evidence.condition_id: evidence for evidence in stored_inputs}
+        if input_by_id.keys() != turn_by_id.keys():
+            fail("scientific analysis requires exact prompt-side input evidence coverage")
+        prompt_family_by_sequence: dict[str, str] = {}
+        for condition_id, turn in turn_by_id.items():
+            prompt_family = input_by_id[condition_id].prompt_family
+            sequence_id = turn.condition.prompt_sequence_id
+            previous_family = prompt_family_by_sequence.setdefault(sequence_id, prompt_family)
+            if previous_family != prompt_family:
+                fail("scientific prompt family is inconsistent within a prompt sequence")
+        if dict(sorted(prompt_family_by_sequence.items())) != dict(
+            manifest.prompt_family_by_sequence
+        ):
+            fail("scientific prompt-family mapping does not reconstruct from committed inputs")
+        if result.coverage.expected_count != len(
+            stored_turns
+        ) or result.coverage.observed_count != len(stored_turns):
+            fail("confirmatory coverage does not reconstruct from committed turn evidence")
+        try:
+            if (
+                run_manifest.evaluation_spec_json is None
+                or run_manifest.evaluation_spec_sha256 is None
+            ):
+                raise ValueError("run manifest lacks its frozen evaluation spec")
+            evaluation_spec = EvaluationSpec.model_validate_json(run_manifest.evaluation_spec_json)
+            stored_records = _stored_scientific_records(
+                stored_turns,
+                dataset_sha256=run_manifest.dataset_hash,
+                action_bounds=run_manifest.action_bounds,
+            )
+            source_coverage, source_guardrails = _source_scientific_guardrails(
+                stored_records,
+                run_manifest=run_manifest,
+                dataset_seal_sha256=manifest.dataset_seal_sha256,
+                evaluation_spec=evaluation_spec,
+            )
+            expected_unit_metrics = _stored_scientific_unit_metrics(stored_records)
+        except (TypeError, ValueError) as exc:
+            fail(f"scientific unit evidence cannot be reconstructed: {exc}")
+            return
+        if result.coverage != source_coverage:
+            fail("confirmatory coverage does not match committed source evidence")
+        expected_guardrails_by_key = {
+            guardrail.evidence_key: guardrail for guardrail in source_guardrails
+        }
+        actual_guardrails_by_key = {
+            guardrail.evidence_key: guardrail for guardrail in result.guardrails
+        }
+        if actual_guardrails_by_key != expected_guardrails_by_key:
+            fail("scientific guardrails do not reconstruct from committed source evidence")
+        actual_unit_metrics = {
+            (
+                outcome.unit_key.prompt_sequence_id,
+                outcome.unit_key.model_seed,
+                outcome.policy_id,
+            ): (
+                outcome.guardrail_clean_task_score.raw_task_score,
+                outcome.instruction_adherence,
+                outcome.repetition_ratio,
+                outcome.response_length_tokens,
+            )
+            for outcome in result.unit_outcomes
+        }
+        if actual_unit_metrics != expected_unit_metrics:
+            fail("scientific unit outcomes do not reconstruct from committed turn evidence")
+        from neurallm.experiments.scientific_analysis import (
+            _optional_metric_availability_from_turns,
+            _recovery_evidence,
+        )
+
+        expected_optional_availability = _optional_metric_availability_from_turns(
+            stored_turns,
+            result.confirmatory_analysis_spec,
+        )
+        if dict(result.optional_metric_availability) != expected_optional_availability:
+            fail("optional metric availability does not reconstruct from committed turns")
+
+        try:
+            _, expected_recovery_units, _, _ = _recovery_evidence(
+                stored_records,
+                result.confirmatory_analysis_spec,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            fail(f"recovery unit evidence cannot be reconstructed: {exc}")
+            return
+        if result.recovery_unit_outcomes != expected_recovery_units:
+            fail("recovery unit outcomes do not reconstruct from committed turn evidence")
+        attribution_records = tuple(
+            record
+            for record in stored_records
+            if record.turn_index > 0
+            and record.policy_id in {"neural_persistent", "neural_matched_history_state_reset"}
+        )
+        attribution_outcomes = aggregate_matched_units(attribution_records)
+        focal_attribution_keys = {
+            (outcome.unit_key.prompt_sequence_id, outcome.unit_key.model_seed)
+            for outcome in attribution_outcomes
+            if outcome.policy_id == "neural_persistent"
+        }
+        reset_attribution_keys = {
+            (outcome.unit_key.prompt_sequence_id, outcome.unit_key.model_seed)
+            for outcome in attribution_outcomes
+            if outcome.policy_id == "neural_matched_history_state_reset"
+        }
+        if focal_attribution_keys != reset_attribution_keys:
+            fail("attribution unit evidence lacks exact persistent/reset matched-unit keys")
+        attribution_by_key = {
+            (
+                outcome.policy_id,
+                outcome.unit_key.prompt_sequence_id,
+                outcome.unit_key.model_seed,
+            ): outcome
+            for outcome in attribution_outcomes
+        }
+        try:
+            expected_attribution_units = tuple(
+                (
+                    outcome.unit_key.prompt_sequence_id,
+                    outcome.unit_key.model_seed,
+                    outcome.task_score
+                    - attribution_by_key[
+                        (
+                            "neural_matched_history_state_reset",
+                            outcome.unit_key.prompt_sequence_id,
+                            outcome.unit_key.model_seed,
+                        )
+                    ].task_score,
+                )
+                for outcome in attribution_outcomes
+                if outcome.policy_id == "neural_persistent"
+            )
+        except KeyError as exc:
+            fail(f"attribution unit evidence lacks an exact reset match: {exc}")
+            return
+        actual_attribution_units = tuple(
+            (
+                outcome.unit_key.prompt_sequence_id,
+                outcome.unit_key.model_seed,
+                outcome.persistent_minus_reset_task_score,
+            )
+            for outcome in result.attribution_unit_outcomes
+        )
+        if actual_attribution_units != expected_attribution_units:
+            fail("attribution unit outcomes do not reconstruct from committed turn evidence")
         if manifest.run_manifest_sha256 != canonical_sha256(run_manifest):
             fail("scientific analysis manifest does not match the run manifest")
         if manifest.run_finalization_sha256 != canonical_sha256(run_finalization):
@@ -1710,6 +2027,14 @@ class SQLiteRunStore:
             fail("scientific analysis does not match the run dataset")
         if manifest.evaluation_input_sha256 != result.input_sha256:
             fail("scientific analysis does not match the confirmatory evaluator input")
+        if (
+            result.confirmatory_analysis_spec != manifest.confirmatory_analysis_spec
+            or result.confirmatory_analysis_spec_sha256
+            != manifest.confirmatory_analysis_spec_sha256
+            or result.prompt_family_by_sequence != manifest.prompt_family_by_sequence
+            or result.prompt_family_design_sha256 != manifest.prompt_family_design_sha256
+        ):
+            fail("scientific result does not match the preregistered analysis design")
         if (
             not result.claim_eligible
             or not result.causal_mechanism_validated
@@ -1739,12 +2064,17 @@ class SQLiteRunStore:
             confirmatory_analysis_contract_sha256,
         )
 
+        assert run_manifest.evaluation_spec_sha256 is not None
         try:
             expected_contract_sha256 = confirmatory_analysis_contract_sha256(
                 scientific_identity_sha256=manifest.scientific_identity_sha256,
                 preregistration_sha256=manifest.preregistration_sha256,
                 confirmatory_analysis_spec=manifest.confirmatory_analysis_spec,
                 confirmatory_analysis_spec_sha256=(manifest.confirmatory_analysis_spec_sha256),
+                evaluation_spec=evaluation_spec,
+                evaluation_spec_sha256=run_manifest.evaluation_spec_sha256,
+                prompt_family_by_sequence=manifest.prompt_family_by_sequence,
+                prompt_family_design_sha256=manifest.prompt_family_design_sha256,
                 dataset_sha256=manifest.dataset_sha256,
                 dataset_purpose=manifest.dataset_purpose,
                 dataset_seal_sha256=manifest.dataset_seal_sha256,

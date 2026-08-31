@@ -376,6 +376,56 @@ The first four form the independent end-to-end efficacy population. The fifth
 is a matched-focal-history, state-reset intervention used only for
 persistent-state attribution; it must never enter efficacy estimates.
 
+Recovery aggregation reduces evidence at the frozen recovery-event by
+model-seed boundary. For each endpoint, the analysis orients the focal/comparator
+margin so positive favors `neural_persistent`, computes it against both exact
+serious comparators (`best_static` and `heuristic_adaptive`), and retains their
+minimum. The architecture has no path that replaces this worst-case margin with
+a mean of the serious comparators.
+
+Decision-side stochastic evidence for `VALIDATED_NEGATIVE` is a separate exact
+seven-gate family: three efficacy comparisons, three recovery endpoints, and
+one attribution comparison. Its Bonferroni simultaneous two-sided bootstrap
+confidence is `1 - 0.05 / 7 = 0.9928571428571429` at familywise error `0.05`.
+Substantive deterministic guardrail failures, behavioral aliasing, and focal
+right-censor failures bypass that stochastic family as direct gates. The
+positive path remains nominal 95% bootstrap evidence, with Holm correction
+across the two serious-comparator efficacy hypotheses.
+
+The result envelope embeds the full `ConfirmatoryAnalysisSpec` plus its
+canonical hash. Model validation cross-checks every persisted bootstrap and
+permutation seed, resample count, confidence level, and practical threshold
+against that spec. Prompt-family subgroup bootstraps are first-class typed
+evidence tied to the unit outcomes, and the statistical computation count is
+derived from the persisted primary, recovery, attribution, and subgroup
+objects. Storage separately requires the embedded spec to equal the
+pre-execution spec bound by the run's confirmatory analysis contract.
+
+The pre-execution plan also resolves an exact `prompt_sequence_id ->
+prompt_family` mapping: every sequence has one and only one family. Its canonical
+SHA-256 is carried by the analysis contract, scientific storage manifest,
+evaluation result, and exported decision. Unit outcomes must cover the exact
+mapping and repeat its family labels; relabeling or omitting a sequence therefore
+invalidates the envelope before subgroup interpretation.
+
+The v2 envelope retains the raw efficacy, recovery, and attribution unit
+outcomes plus optional-metric availability. Aggregate statistics are recomputed
+from those records, and optional-metric, right-censoring, and subgroup-conflict
+limitations must equal the complete derived set. Arbitrary, missing, or edited
+limitations cannot alter the final decision. Decision rule
+`confirmatory-scientific-decision-v2`, analysis/result/storage schema 2, and the
+Phase 5 `decision.json` schema 2 are one incompatible boundary. The physical
+SQLite schema is still 2; legacy v1 scientific-analysis rows fail closed and
+cannot be overwritten or reanalyzed in place because their run manifest is
+also v1-bound. Replacement requires a new v2 confirmatory workflow in a fresh
+run directory.
+
+The v2 run manifest retains canonical `EvaluationSpec` JSON plus its SHA-256.
+At scientific persistence, SQLite reconstructs action/history evidence from
+committed traces, rebuilds coverage and pairwise guardrails under those frozen
+thresholds, and rejects any submitted guardrail status or threshold that does
+not match the source records.
+
 The three frozen run tiers have exact request-accounting schedules:
 
 | Tier | Sequences | Turns per sequence | Model seeds | Controller seeds | Arms | Logical generations |

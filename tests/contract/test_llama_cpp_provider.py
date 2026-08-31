@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -29,7 +30,10 @@ from neurallm.providers import (
 )
 
 _CHAT_TEMPLATE = "{% for message in messages %}{{ message.content }}{% endfor %}"
-_MODEL_PATH = "C:/models/neurallm-test.gguf"
+_MODEL_PATH = str(
+    (Path(__file__).resolve().parents[1] / "fixtures" / "llama_cpp_model_stub.txt").resolve()
+)
+_MODEL_SHA256 = sha256(Path(_MODEL_PATH).read_bytes()).hexdigest()
 _BUILD_ID = "b5000-deadbeef"
 _MODEL_ALIAS = "neurallm-test"
 
@@ -43,6 +47,7 @@ def _config(**changes: object) -> LlamaCppProviderConfig:
         "base_url": "http://127.0.0.1:8080",
         "model_alias": _MODEL_ALIAS,
         "model_path": _MODEL_PATH,
+        "model_sha256": _MODEL_SHA256,
         "build_id": _BUILD_ID,
         "chat_template_sha256": _template_sha256(),
         "connect_timeout_seconds": 1.25,
@@ -257,6 +262,12 @@ def test_configuration_is_explicit_strict_and_validated() -> None:
         _config(base_url="localhost:8080")
     with pytest.raises(ValidationError, match="chat_template_sha256"):
         _config(chat_template_sha256="not-a-hash")
+    with pytest.raises(ValidationError, match="model_sha256"):
+        _config(model_sha256="not-a-hash")
+    with pytest.raises(ValidationError, match="model_sha256"):
+        LlamaCppProviderConfig.model_validate(
+            {key: value for key, value in config.model_dump().items() if key != "model_sha256"}
+        )
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         LlamaCppProviderConfig.model_validate(
             {**config.model_dump(), "environment_fallback": "forbidden"}
@@ -269,6 +280,9 @@ def test_configuration_is_explicit_strict_and_validated() -> None:
         ("base_url", " http://127.0.0.1:8080", "surrounding whitespace"),
         ("base_url", "http://user:secret@127.0.0.1:8080", "credentials"),
         ("base_url", "http://127.0.0.1:8080?model=other", "query or fragment"),
+        ("base_url", "http://127.0.0.1:8080?", "query or fragment"),
+        ("base_url", "http://127.0.0.1:8080#", "query or fragment"),
+        ("model_path", "~/model.gguf", "absolute client-local path"),
         ("model_alias", " ", "must not be blank"),
     ],
 )
@@ -301,6 +315,7 @@ def test_effective_configuration_rejects_unproducible_preflight_evidence(
         "client_config": _config(),
         "model_alias": _MODEL_ALIAS,
         "model_path": _MODEL_PATH,
+        "model_sha256": _MODEL_SHA256,
         "build_id": _BUILD_ID,
         "chat_template": _CHAT_TEMPLATE,
         "chat_template_sha256": _template_sha256(),
@@ -321,6 +336,7 @@ def test_preflight_binds_exact_props_identity_and_explicit_timeouts() -> None:
     assert provider.provider_identity.provider_type == "llama_cpp"
     assert provider.provider_identity.model_alias == _MODEL_ALIAS
     assert provider.provider_identity.model_path == _MODEL_PATH
+    assert provider.provider_identity.model_sha256 == _MODEL_SHA256
     assert provider.provider_identity.build_id == _BUILD_ID
     assert provider.provider_identity.chat_template_sha256 == _template_sha256()
     assert provider.provider_identity.provider_config_hash == canonical_sha256(
@@ -460,6 +476,99 @@ def test_identity_drift_fails_before_completion_dispatch() -> None:
 
     with pytest.raises(LlamaCppIdentityDriftError, match="drifted before dispatch"):
         provider.generate(_request(provider))
+
+    assert handler.completion_dispatch_count == 0
+
+
+def test_model_digest_mismatch_fails_before_provider_network_io(tmp_path: Path) -> None:
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"unexpected model bytes")
+    handler = _RecordingHandler()
+
+    with pytest.raises(LlamaCppIdentityDriftError, match="SHA-256"):
+        LlamaCppProvider(
+            _config(model_path=str(model_path.resolve()), model_sha256="0" * 64),
+            transport=httpx.MockTransport(handler),
+        )
+
+    assert handler.requests == []
+    assert handler.completion_dispatch_count == 0
+
+
+def test_model_replacement_after_preflight_fails_before_completion_dispatch(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "model.gguf"
+    original = b"first model artifact"
+    model_path.write_bytes(original)
+    config = _config(
+        model_path=str(model_path.resolve()),
+        model_sha256=sha256(original).hexdigest(),
+    )
+
+    preflight_handler = _RecordingHandler(
+        props_factory=lambda _call: _props(model_path=config.model_path)
+    )
+    result = preflight_llama_cpp(config, transport=httpx.MockTransport(preflight_handler))
+    assert result.expected_identity.model_sha256 == config.model_sha256
+    assert preflight_handler.completion_dispatch_count == 0
+
+    model_path.write_bytes(b"second model artifact")
+    execution_handler = _RecordingHandler(
+        props_factory=lambda _call: _props(model_path=config.model_path)
+    )
+    with pytest.raises(LlamaCppIdentityDriftError, match="SHA-256"):
+        LlamaCppProvider(config, transport=httpx.MockTransport(execution_handler))
+
+    assert execution_handler.requests == []
+    assert execution_handler.completion_dispatch_count == 0
+
+
+def test_model_replacement_after_construction_fails_before_generation_io(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "model.gguf"
+    original = b"original model artifact"
+    model_path.write_bytes(original)
+    config = _config(
+        model_path=str(model_path.resolve()),
+        model_sha256=sha256(original).hexdigest(),
+    )
+    handler = _RecordingHandler(props_factory=lambda _call: _props(model_path=config.model_path))
+    provider = LlamaCppProvider(config, transport=httpx.MockTransport(handler))
+    calls_after_construction = len(handler.requests)
+
+    model_path.write_bytes(b"modified model artifact")
+    with pytest.raises(LlamaCppIdentityDriftError, match="SHA-256"):
+        provider.generate(_request(provider))
+
+    assert len(handler.requests) == calls_after_construction
+    assert handler.completion_dispatch_count == 0
+
+
+def test_final_model_artifact_verification_rehashes_even_when_fingerprint_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_path = tmp_path / "model.gguf"
+    original = b"original model artifact"
+    model_path.write_bytes(original)
+    config = _config(
+        model_path=str(model_path.resolve()),
+        model_sha256=sha256(original).hexdigest(),
+    )
+    handler = _RecordingHandler(props_factory=lambda _call: _props(model_path=config.model_path))
+    provider = LlamaCppProvider(config, transport=httpx.MockTransport(handler))
+    bound_fingerprint = provider._model_artifact_fingerprint
+
+    model_path.write_bytes(b"modified model artifact")
+    monkeypatch.setattr(
+        "neurallm.providers.llama_cpp._artifact_fingerprint",
+        lambda _stat: bound_fingerprint,
+    )
+
+    with pytest.raises(LlamaCppIdentityDriftError, match="SHA-256"):
+        provider.verify_model_artifact()
 
     assert handler.completion_dispatch_count == 0
 

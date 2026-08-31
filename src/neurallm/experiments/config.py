@@ -396,6 +396,8 @@ class ExperimentConfig(_StrictFrozenModel):
                 raise ValueError("confirmatory protocol requires sealed evaluation-purpose data")
             if self.provider.kind != "llama_cpp":
                 raise ValueError("confirmatory protocol requires the explicit llama_cpp provider")
+            if self.provider.expected_identity.model_sha256 is None:
+                raise ValueError("confirmatory protocol requires a model-artifact SHA-256 identity")
             if self.evaluation is None:
                 raise ValueError("confirmatory protocol requires an EvaluationSpec")
             if self.confirmatory_analysis is None:
@@ -429,6 +431,13 @@ class ExperimentConfig(_StrictFrozenModel):
             ):
                 raise ValueError(
                     "confirmatory efficacy rules disagree with the frozen EvaluationSpec"
+                )
+            if (
+                self.confirmatory_analysis.recovery.serious_comparator_ids
+                != self.evaluation.required_serious_comparator_ids
+            ):
+                raise ValueError(
+                    "confirmatory recovery roles disagree with the frozen EvaluationSpec"
                 )
             if self.development_selection_input is None or self.static_selection_record is None:
                 raise ValueError(

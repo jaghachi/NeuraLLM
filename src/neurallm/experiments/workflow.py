@@ -262,6 +262,11 @@ def execute_prepared(
             provider.close()
     database_path = output_directory / "run.sqlite3"
     if protocol is not None and protocol.run_tier is RunTier.CONFIRMATORY:
+        if not isinstance(provider, LlamaCppProvider):
+            raise StoreInvariantError(
+                "confirmatory claim finalization requires the digest-bound llama_cpp provider"
+            )
+        provider.verify_model_artifact()
         result, context = analyze_closed_confirmatory_run(prepared.plan, database_path)
         spec = prepared.plan.confirmatory_analysis
         preregistration = prepared.plan.preregistration
@@ -298,6 +303,8 @@ def execute_prepared(
                 confirmatory_analysis_contract_sha256=(context.analysis_contract_sha256),
                 confirmatory_analysis_spec=spec,
                 confirmatory_analysis_spec_sha256=canonical_sha256(spec),
+                prompt_family_by_sequence=result.prompt_family_by_sequence,
+                prompt_family_design_sha256=result.prompt_family_design_sha256,
                 dataset_sha256=prepared.plan.dataset_hash,
                 dataset_purpose=dataset_purpose,
                 dataset_seal_sha256=dataset_seal.seal_sha256,

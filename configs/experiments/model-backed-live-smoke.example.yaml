@@ -22,7 +22,7 @@ provider:
     build_id: PASTE_PREFLIGHT_BUILD_ID
     provider_config_hash: 0000000000000000000000000000000000000000000000000000000000000000
     model_path: C:/PASTE/PREFLIGHT/MODEL/PATH/model.gguf
-    model_sha256: null
+    model_sha256: 0000000000000000000000000000000000000000000000000000000000000000
     chat_template_sha256: 0000000000000000000000000000000000000000000000000000000000000000
   expected_effective_configuration_json: '{"PASTE":"the exact canonical expected_effective_configuration_json from preflight"}'
 policy_specs:

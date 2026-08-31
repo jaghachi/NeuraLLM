@@ -25,6 +25,7 @@ from neurallm.providers.llama_cpp import (
     LlamaCppProviderError,
     LlamaCppTransportError,
     llama_cpp_provider_identity,
+    require_llama_cpp_provider_binding,
 )
 from neurallm.providers.preflight import LlamaCppPreflightResult, preflight_llama_cpp
 
@@ -48,6 +49,7 @@ __all__ = [
     "LlamaCppPreflightResult",
     "LlamaCppTransportError",
     "llama_cpp_provider_identity",
+    "require_llama_cpp_provider_binding",
     "preflight_llama_cpp",
     "ProviderIdentityMismatchError",
     "effective_parameters_match_request",

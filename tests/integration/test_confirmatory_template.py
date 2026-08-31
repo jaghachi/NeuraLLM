@@ -46,6 +46,18 @@ def _llama_provider_payload() -> dict[str, object]:
     }
 
 
+def test_confirmatory_configuration_requires_model_artifact_digest() -> None:
+    payload = deepcopy(load_yaml_mapping(TEMPLATE))
+    provider = _llama_provider_payload()
+    identity = provider["expected_identity"]
+    assert isinstance(identity, dict)
+    identity["model_sha256"] = None
+    payload["provider"] = provider
+
+    with pytest.raises(ValidationError, match="model-artifact SHA-256"):
+        ExperimentConfig.model_validate(payload)
+
+
 def test_confirmatory_template_seals_exact_provider_free_2400_turn_plan(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

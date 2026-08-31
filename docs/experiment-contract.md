@@ -506,6 +506,63 @@ it never substitutes that control for either serious comparator. The Phase 4
 mechanism harness alone does not support neural benefit or a model-backed
 persistent-state effect.
 
+Phase 5 recovery reduction is also comparator-exact. For each preregistered
+recovery event and model seed, each endpoint is oriented so a positive margin
+favors `neural_persistent`: focal minus comparator for both post-stressor change
+endpoints, and comparator minus focal for time to return. The analysis retains
+the minimum oriented margin across `best_static` and `heuristic_adaptive` for
+that event/model-seed unit. It never averages the two serious comparators.
+
+The stochastic negative-side evidence used to reach `VALIDATED_NEGATIVE` has
+one exact seven-member family: all three efficacy comparisons, all three
+recovery endpoints, and the persistent-state attribution comparison. A
+Bonferroni simultaneous two-sided bootstrap uses familywise alpha `0.05` and
+confidence `1 - 0.05 / 7 = 0.9928571428571429`. Substantive deterministic
+guardrail failures, behavioral-alias findings, and focal right-censor failures
+are direct decision gates; they are not members of this stochastic
+multiplicity family. The adjustment is negative-side only: positive gates keep
+their nominal 95% bootstrap intervals, and positive efficacy tests across
+`best_static` and `heuristic_adaptive` keep the preregistered Holm correction.
+
+The confirmatory result persists the complete preregistered analysis spec and
+its canonical SHA-256. On model load, all nominal and adjusted bootstrap seeds,
+resample counts, confidence levels, permutation settings, and practical
+thresholds are checked against that embedded spec. On durable persistence, the
+embedded spec and hash must also equal the pre-execution spec in the scientific
+analysis manifest. Prompt-family sensitivity bootstraps are persisted as typed
+subgroup results tied to the exact unit-level family assignments; the reported
+statistical-call count is derived from those and the other enclosed statistical
+objects.
+
+Before any confirmatory request is dispatched, all scheduled turns must produce
+one exact `prompt_sequence_id -> prompt_family` mapping, with exactly one family
+for each sequence. Canonical mapping bytes and their SHA-256 are frozen in the
+analysis contract, repeated in the scientific manifest and result, and exposed
+in `decision.json`. The result's unit keys and family labels must cover that
+mapping exactly.
+
+The v2 result also closes the path from raw evidence to the decision. It stores
+unit-level efficacy scores, recovery margins and censor indicators,
+persistent-minus-reset attribution differences, and optional-metric
+availability. Aggregate evidence is recomputed from those values. The limitation
+tuple must then equal the complete derived optional-metric, right-censoring, and
+prompt-family-conflict set; a caller cannot add, remove, or edit a limitation to
+change the decision.
+
+The current confirmatory boundary uses decision rule
+`confirmatory-scientific-decision-v2`, `confirmatory-analysis-v2`,
+`confirmatory-evaluation-v2`,
+`confirmatory-scientific-analysis-storage-v2`, and Phase 5 `decision.json`
+schema 2. These versions move together and are incompatible with provisional v1
+scientific envelopes. SQLite's physical schema remains version 2, but v1
+scientific-analysis rows are rejected rather than migrated. Their run manifests
+remain v1-bound, so replacement requires a new v2 confirmatory workflow in a
+fresh run directory rather than an in-place offline reanalysis.
+
+The run manifest also binds canonical `EvaluationSpec` JSON and its SHA-256.
+Persistence reconstructs guardrail status and thresholds from committed traces
+and metrics under that pre-execution spec before accepting a scientific result.
+
 ## Phase 3 and final decision states
 
 The implemented Phase 3 verdict set is:
@@ -575,8 +632,9 @@ Repeated persistence of identical evidence is idempotent. A different analysis
 after finalization, a missing finalized run, or hash-mismatched analysis evidence
 fails closed.
 
-A confirmatory analysis additionally requires a clean-tree llama.cpp manifest,
-the exact five-arm schedule and matched-history edge, zero uncertain dispatches,
+A confirmatory analysis additionally requires a clean-tree llama.cpp manifest
+whose identity binds the measured model-artifact SHA-256, the exact five-arm
+schedule and matched-history edge, zero uncertain dispatches,
 complete planned/dispatched/successful/committed durable accounting, the frozen
 preregistration and analysis-contract hashes, and the sealed evaluation dataset.
 It reconstructs metrics and causal evidence from committed records, computes
@@ -639,9 +697,10 @@ The five phases execute in order. No live model call occurs in default tests,
 sealed evaluation data is never accepted for development selection or tuning,
 and no result is overstated beyond the gate that generated it.
 
-Live llama.cpp execution additionally requires a successful explicit,
-no-generation `neurallm preflight --provider-config <path>` against `/health`
-and `/props`, followed by the double CLI gate: both `--execute` and
+Live llama.cpp execution additionally requires a successful explicit preflight
+that hashes the client-local model artifact and makes no generation request,
+`neurallm preflight --provider-config <path>`, against `/health` and `/props`,
+followed by the double CLI gate: both `--execute` and
 `--allow-live-provider` on `neurallm run --config <path>`. Preflight alone or
 either execution flag alone authorizes no generation; no environment fallback
 may fill in these choices.

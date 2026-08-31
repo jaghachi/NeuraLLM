@@ -13,7 +13,8 @@ provider.
 
 ## Required server contract
 
-Construction performs these requests:
+Construction first streams the configured local model artifact and requires its
+lowercase SHA-256 to equal `model_sha256`. It then performs these requests:
 
 1. `GET /health`, which must return exactly `{"status":"ok"}`.
 2. `GET /props`, which must return a JSON object containing:
@@ -23,9 +24,14 @@ Construction performs these requests:
      finite-float `top_p`, integer `top_k`, finite-float `presence_penalty`,
      integer `n_predict`, and integer `seed`.
 
-Before every generation, the adapter repeats `/health` and `/props` and requires
-the complete effective configuration and derived identity to equal the values
-bound at construction. It then sends exactly one non-streaming
+Before every generation, the adapter cheaply compares the local artifact's
+device, file identity, size, and modification time with the values bound at
+construction. A changed fingerprint triggers a full digest remeasurement. This
+metadata check catches ordinary replacements but is not a cryptographic
+measurement of every byte at every dispatch. The adapter then repeats `/health`
+and `/props` and requires the complete effective configuration and derived
+identity to equal the values bound at construction. It then sends exactly one
+non-streaming
 `POST /completion` with:
 
 ```text
@@ -63,7 +69,8 @@ machine identity accidentally.
 | --- | --- |
 | `base_url` | Absolute HTTP(S) URL with no credentials, query, or fragment |
 | `model_alias` | Exact alias sent to and returned by `/completion` |
-| `model_path` | Exact non-blank path returned by `/props` |
+| `model_path` | Absolute, readable client-local regular file path that is returned exactly by `/props` |
+| `model_sha256` | Lowercase SHA-256 measured from the complete local model artifact |
 | `build_id` | Exact non-blank `build_info` returned by `/props` |
 | `chat_template_sha256` | Lowercase SHA-256 of the raw `/props` `chat_template` UTF-8 text |
 | `connect_timeout_seconds` | Explicit positive finite connect timeout |
@@ -86,9 +93,10 @@ preflight command, using only an explicit machine-local file:
 neurallm preflight --provider-config configs/providers/llama_cpp.local.yaml
 ```
 
-This is a deliberate network operation, but it performs exactly one `GET
-/health` and one `GET /props`; it never requests `/completion`. The provider
-configuration is not read from an environment variable. Success emits one
+This is a deliberate network operation, but it first hashes the local artifact,
+then performs exactly one `GET /health` and one `GET /props`; it never requests
+`/completion`. The provider configuration is not read from an environment
+variable. Success emits one
 canonical JSON object containing `expected_identity`, `provider_identity_id`,
 `expected_effective_configuration_json`, and `completion_requested: false`.
 
@@ -107,7 +115,7 @@ provider:
     build_id: replace-with-preflight-output
     provider_config_hash: replace-with-64-character-preflight-output
     model_path: replace-with-preflight-output
-    model_sha256: null
+    model_sha256: replace-with-64-character-preflight-output
     chat_template_sha256: replace-with-preflight-output
   expected_effective_configuration_json: >-
     {"replace":"with the exact single-line canonical preflight output"}
@@ -121,10 +129,19 @@ top-level `provider_identity_id` is verification output and is not a separate
 experiment-config field.
 
 `provider_config_hash` binds the explicit client configuration and the inspected
-effective server configuration. If the server, timeouts, defaults, slots,
-template, path, build, or alias changes, perform a new preflight and treat it as
-a new provider identity. Never edit the expected identity merely to bypass a
-drift failure.
+effective server configuration, including `model_sha256`; `ProviderIdentity`
+also records that artifact digest directly. If the model bytes, server,
+timeouts, defaults, slots, template, path, build, or alias changes, perform a
+new preflight and treat it as a new provider identity. Never edit the expected
+identity merely to bypass a drift failure.
+
+The digest establishes the artifact readable at the client-side `model_path`.
+NeuraLLM also requires `/props` to return that exact path, but llama.cpp does not
+attest over HTTP that its already-loaded weights came from those bytes. Therefore
+claim-eligible use requires a same-host path or a trusted shared mount and an
+operator-controlled server whose path-to-loaded-artifact relationship is trusted.
+A remote-only or container-internal path that the client cannot read fails
+closed; there is no remote attestation or download fallback.
 
 ## Provider-free commands and explicit execution
 
@@ -153,6 +170,17 @@ turn gets at most one `/completion` dispatch. If transport fails after dispatch
 begins, the SQLite turn becomes uncertain and resume fails closed instead of
 silently generating again.
 
+For confirmatory execution, the construction hash and the full hash immediately
+before scientific persistence/export are point-in-time measurements. A
+replacement between preflight and execution fails during construction, and an
+ordinary mid-run replacement changes the per-dispatch metadata fingerprint and
+triggers a full rehash. These checks are not continuous remote attestation: a
+transient same-size rewrite whose file identity and modification time are
+restored between checks is outside what the fingerprint can prove, and the final
+hash cannot retrospectively identify it. Claim-eligible use therefore assumes a
+trusted same-host operator (or equivalently trusted shared mount) who excludes
+that rewrite-and-restore behavior.
+
 ## Explicit live test
 
 The live test is excluded by default. It requires both the `live` marker and the
@@ -166,6 +194,7 @@ $livePayload = @{
         base_url = "http://127.0.0.1:8080"
         model_alias = "replace-with-explicit-alias"
         model_path = "C:/models/replace-with-model.gguf"
+        model_sha256 = "replace-with-64-character-model-hash"
         build_id = "replace-with-build-id"
         chat_template_sha256 = "replace-with-64-character-hash"
         connect_timeout_seconds = 5.0

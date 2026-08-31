@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from math import isclose
 from types import MappingProxyType
-from typing import Literal, Self
+from typing import Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -50,6 +50,18 @@ EFFICACY_COMPARATOR_IDS: tuple[EfficacyComparatorId, ...] = (
     *SERIOUS_COMPARATOR_IDS,
     NEGATIVE_CONTROL_POLICY_ID,
 )
+
+VALIDATED_NEGATIVE_GATE_IDS = (
+    "efficacy:best_static",
+    "efficacy:heuristic_adaptive",
+    "efficacy:random_matched",
+    "recovery:post_stressor_task_score_change",
+    "recovery:post_stressor_repetition_change",
+    "recovery:time_to_return_to_target_band",
+    "attribution:neural_matched_history_state_reset",
+)
+VALIDATED_NEGATIVE_FAMILYWISE_ALPHA: Final = 0.05
+VALIDATED_NEGATIVE_ADJUSTED_CONFIDENCE_LEVEL: Final = 0.9928571428571429
 
 REQUIRED_SCIENTIFIC_GUARDRAILS = (
     "action_bound_compliance",
@@ -292,6 +304,134 @@ class ScientificEvidenceGate(ScientificFrozenModel):
         return value
 
 
+class ValidatedNegativeMultiplicitySpec(ScientificFrozenModel):
+    """Frozen familywise-error contract for stochastic negative gates.
+
+    The adjusted confidence is deliberately used only for negative-side
+    decisions.  Positive gates retain their separately preregistered 95%
+    confidence intervals and Holm/significance rules.
+    """
+
+    schema_version: Literal[1] = 1
+    method_version: Literal["bonferroni-simultaneous-bootstrap-v1"] = (
+        "bonferroni-simultaneous-bootstrap-v1"
+    )
+    familywise_alpha: float = Field(
+        default=VALIDATED_NEGATIVE_FAMILYWISE_ALPHA,
+        gt=0.0,
+        lt=1.0,
+        allow_inf_nan=False,
+    )
+    gate_ids: tuple[NonEmptyString, ...] = VALIDATED_NEGATIVE_GATE_IDS
+    adjusted_two_sided_confidence_level: float = Field(
+        default=VALIDATED_NEGATIVE_ADJUSTED_CONFIDENCE_LEVEL,
+        gt=0.0,
+        lt=1.0,
+        allow_inf_nan=False,
+    )
+
+    @field_validator("gate_ids", mode="before")
+    @classmethod
+    def _accept_gate_list(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
+
+    @model_validator(mode="after")
+    def _require_exact_family(self) -> Self:
+        if self.gate_ids != VALIDATED_NEGATIVE_GATE_IDS:
+            raise ValueError("validated-negative gates must match the exact frozen family")
+        if self.familywise_alpha != VALIDATED_NEGATIVE_FAMILYWISE_ALPHA:
+            raise ValueError("validated-negative familywise alpha must remain 0.05")
+        expected_confidence = 1.0 - self.familywise_alpha / len(self.gate_ids)
+        if self.adjusted_two_sided_confidence_level != expected_confidence:
+            raise ValueError("validated-negative confidence must match Bonferroni adjustment")
+        return self
+
+
+DEFAULT_VALIDATED_NEGATIVE_MULTIPLICITY = ValidatedNegativeMultiplicitySpec()
+VALIDATED_NEGATIVE_MULTIPLICITY_SHA256: Final = canonical_sha256(
+    DEFAULT_VALIDATED_NEGATIVE_MULTIPLICITY
+)
+
+
+class NegativeSideEvidence(ScientificFrozenModel):
+    """Separately persisted simultaneous evidence for one negative gate."""
+
+    method_version: Literal["bonferroni-simultaneous-bootstrap-v1"] = (
+        "bonferroni-simultaneous-bootstrap-v1"
+    )
+    gate_id: NonEmptyString
+    multiplicity_spec_sha256: Sha256Hex
+    familywise_alpha: float = Field(
+        default=VALIDATED_NEGATIVE_FAMILYWISE_ALPHA,
+        gt=0.0,
+        lt=1.0,
+        allow_inf_nan=False,
+    )
+    family_size: PositiveInt = 7
+    adjusted_two_sided_confidence_level: float = Field(
+        default=VALIDATED_NEGATIVE_ADJUSTED_CONFIDENCE_LEVEL,
+        gt=0.0,
+        lt=1.0,
+        allow_inf_nan=False,
+    )
+    practical_effect_threshold: float = Field(ge=0.0, allow_inf_nan=False)
+    bootstrap: BootstrapResult
+    decisive_negative: bool
+
+    @model_validator(mode="after")
+    def _validate_adjusted_evidence(self) -> Self:
+        if self.gate_id not in VALIDATED_NEGATIVE_GATE_IDS:
+            raise ValueError("negative-side evidence targets an unknown family gate")
+        if self.family_size != len(VALIDATED_NEGATIVE_GATE_IDS):
+            raise ValueError("negative-side evidence has the wrong family size")
+        if self.familywise_alpha != VALIDATED_NEGATIVE_FAMILYWISE_ALPHA:
+            raise ValueError("negative-side evidence has the wrong familywise alpha")
+        if self.adjusted_two_sided_confidence_level != VALIDATED_NEGATIVE_ADJUSTED_CONFIDENCE_LEVEL:
+            raise ValueError("negative-side evidence has the wrong adjusted confidence")
+        if self.multiplicity_spec_sha256 != VALIDATED_NEGATIVE_MULTIPLICITY_SHA256:
+            raise ValueError("negative-side evidence does not bind the frozen family contract")
+        if self.bootstrap.confidence_level != self.adjusted_two_sided_confidence_level:
+            raise ValueError("negative-side bootstrap does not use the adjusted confidence")
+        if self.decisive_negative != (self.bootstrap.upper < self.practical_effect_threshold):
+            raise ValueError("negative-side decision does not match its adjusted upper bound")
+        return self
+
+
+def negative_side_evidence(
+    differences: Sequence[float],
+    *,
+    gate_id: str,
+    practical_effect_threshold: float,
+    resamples: int,
+    seed: int,
+    multiplicity: ValidatedNegativeMultiplicitySpec,
+) -> NegativeSideEvidence:
+    """Compute one member of the frozen simultaneous negative family."""
+
+    if not isinstance(multiplicity, ValidatedNegativeMultiplicitySpec):
+        raise TypeError("multiplicity must be a ValidatedNegativeMultiplicitySpec")
+    if gate_id not in multiplicity.gate_ids:
+        raise ValueError("negative-side gate is not in the frozen multiplicity family")
+    bootstrap = paired_bootstrap_ci(
+        differences,
+        resamples=resamples,
+        confidence_level=multiplicity.adjusted_two_sided_confidence_level,
+        seed=seed,
+    )
+    return NegativeSideEvidence(
+        gate_id=gate_id,
+        multiplicity_spec_sha256=canonical_sha256(multiplicity),
+        familywise_alpha=multiplicity.familywise_alpha,
+        family_size=len(multiplicity.gate_ids),
+        adjusted_two_sided_confidence_level=(multiplicity.adjusted_two_sided_confidence_level),
+        practical_effect_threshold=practical_effect_threshold,
+        bootstrap=bootstrap,
+        decisive_negative=bootstrap.upper < practical_effect_threshold,
+    )
+
+
 class EfficacyAnalysisSpec(ScientificFrozenModel):
     """Frozen statistics and exact roles for end-to-end efficacy."""
 
@@ -338,6 +478,7 @@ class EfficacyComparisonResult(ScientificFrozenModel):
     unit_count: NonNegativeInt
     mean_difference: FiniteFloat | None = None
     bootstrap: BootstrapResult | None = None
+    negative_side_evidence: NegativeSideEvidence | None = None
     permutation: PermutationTestResult | None = None
     holm: HolmAdjustedPValue | None = None
     practical_effect_threshold: float = Field(gt=0.0, allow_inf_nan=False)
@@ -387,7 +528,12 @@ class EfficacyComparisonResult(ScientificFrozenModel):
         if len(keys) != len(set(keys)):
             raise ValueError("comparison guardrails must be unique by name and scope")
 
-        statistics = (self.mean_difference, self.bootstrap, self.permutation)
+        statistics = (
+            self.mean_difference,
+            self.bootstrap,
+            self.negative_side_evidence,
+            self.permutation,
+        )
         if self.status is ScientificEvidenceStatus.INVALID:
             if any(value is not None for value in statistics) or self.holm is not None:
                 raise ValueError(
@@ -398,14 +544,30 @@ class EfficacyComparisonResult(ScientificFrozenModel):
             raise ValueError("valid efficacy evidence requires complete nonempty statistics")
         assert self.mean_difference is not None
         assert self.bootstrap is not None
+        assert self.negative_side_evidence is not None
         assert self.permutation is not None
         if (
             self.bootstrap.sample_size != self.unit_count
+            or self.negative_side_evidence.bootstrap.sample_size != self.unit_count
             or self.permutation.sample_size != self.unit_count
             or not isclose(self.mean_difference, self.bootstrap.estimate, abs_tol=1e-15)
+            or not isclose(
+                self.mean_difference,
+                self.negative_side_evidence.bootstrap.estimate,
+                abs_tol=1e-15,
+            )
             or not isclose(self.mean_difference, self.permutation.observed_mean, abs_tol=1e-15)
         ):
             raise ValueError("efficacy statistics do not describe the same matched units")
+        if (
+            self.negative_side_evidence.gate_id != f"efficacy:{self.comparator_policy_id}"
+            or not isclose(
+                self.negative_side_evidence.practical_effect_threshold,
+                self.practical_effect_threshold,
+                abs_tol=1e-15,
+            )
+        ):
+            raise ValueError("efficacy negative-side evidence targets the wrong frozen gate")
         if serious:
             if self.holm is None or self.holm.comparator_policy_id != self.comparator_policy_id:
                 raise ValueError("serious efficacy comparison requires its Holm result")
@@ -419,6 +581,7 @@ class EfficacyComparisonResult(ScientificFrozenModel):
             raise ValueError("negative control must be excluded from Holm correction")
         expected_status = _classify_efficacy(
             bootstrap=self.bootstrap,
+            negative_evidence=self.negative_side_evidence,
             permutation=self.permutation,
             holm=self.holm,
             practical_effect_threshold=self.practical_effect_threshold,
@@ -630,6 +793,7 @@ class FinalDecisionIneligibleError(ValueError):
 def _classify_efficacy(
     *,
     bootstrap: BootstrapResult,
+    negative_evidence: NegativeSideEvidence,
     permutation: PermutationTestResult,
     holm: HolmAdjustedPValue | None,
     practical_effect_threshold: float,
@@ -651,7 +815,7 @@ def _classify_efficacy(
         and p_value <= alpha
     ):
         return ScientificEvidenceStatus.PASS
-    if bootstrap.upper < practical_effect_threshold:
+    if negative_evidence.decisive_negative:
         return ScientificEvidenceStatus.DECISIVE_NEGATIVE
     return ScientificEvidenceStatus.INCONCLUSIVE
 
@@ -695,6 +859,9 @@ def evaluate_efficacy_comparisons(
     paired_differences: Mapping[str, Sequence[float]],
     *,
     spec: EfficacyAnalysisSpec,
+    negative_multiplicity: ValidatedNegativeMultiplicitySpec = (
+        DEFAULT_VALIDATED_NEGATIVE_MULTIPLICITY
+    ),
     guardrails_by_comparator: Mapping[str, Sequence[ScientificGuardrailResult]] | None = None,
     behavioral_alias_by_comparator: Mapping[str, bool] | None = None,
 ) -> tuple[EfficacyComparisonResult, ...]:
@@ -706,6 +873,8 @@ def evaluate_efficacy_comparisons(
 
     if not isinstance(spec, EfficacyAnalysisSpec):
         raise TypeError("spec must be an EfficacyAnalysisSpec")
+    if not isinstance(negative_multiplicity, ValidatedNegativeMultiplicitySpec):
+        raise TypeError("negative_multiplicity must be a ValidatedNegativeMultiplicitySpec")
     if set(paired_differences) != set(EFFICACY_COMPARATOR_IDS):
         raise ValueError("paired differences must contain exactly the efficacy comparators")
     guardrails = guardrails_by_comparator or MappingProxyType({})
@@ -744,7 +913,10 @@ def evaluate_efficacy_comparisons(
             detail="efficacy statistics are suppressed by an invalid integrity guardrail",
         )
 
-    drafts: dict[str, tuple[BootstrapResult, PermutationTestResult]] = {}
+    drafts: dict[
+        str,
+        tuple[BootstrapResult, NegativeSideEvidence, PermutationTestResult],
+    ] = {}
     try:
         for comparator_id in EFFICACY_COMPARATOR_IDS:
             differences = values[comparator_id]
@@ -754,6 +926,14 @@ def evaluate_efficacy_comparisons(
                     resamples=spec.bootstrap_resamples,
                     confidence_level=spec.confidence_level,
                     seed=spec.bootstrap_seed,
+                ),
+                negative_side_evidence(
+                    differences,
+                    gate_id=f"efficacy:{comparator_id}",
+                    practical_effect_threshold=spec.practical_effect_threshold,
+                    resamples=spec.bootstrap_resamples,
+                    seed=spec.bootstrap_seed,
+                    multiplicity=negative_multiplicity,
                 ),
                 paired_sign_flip_permutation_test(
                     differences,
@@ -773,14 +953,14 @@ def evaluate_efficacy_comparisons(
         result.comparator_policy_id: result
         for result in holm_adjust(
             {
-                comparator_id: drafts[comparator_id][1].p_value
+                comparator_id: drafts[comparator_id][2].p_value
                 for comparator_id in SERIOUS_COMPARATOR_IDS
             }
         )
     }
     results: list[EfficacyComparisonResult] = []
     for comparator_id in EFFICACY_COMPARATOR_IDS:
-        bootstrap, permutation = drafts[comparator_id]
+        bootstrap, negative_evidence, permutation = drafts[comparator_id]
         comparison_guardrails = _guardrails_for(comparator_id, guardrails)
         holm = holm_by_comparator.get(comparator_id)
         results.append(
@@ -795,6 +975,7 @@ def evaluate_efficacy_comparisons(
                 unit_count=len(values[comparator_id]),
                 mean_difference=bootstrap.estimate,
                 bootstrap=bootstrap,
+                negative_side_evidence=negative_evidence,
                 permutation=permutation,
                 holm=holm,
                 practical_effect_threshold=spec.practical_effect_threshold,
@@ -802,6 +983,7 @@ def evaluate_efficacy_comparisons(
                 guardrails=comparison_guardrails,
                 status=_classify_efficacy(
                     bootstrap=bootstrap,
+                    negative_evidence=negative_evidence,
                     permutation=permutation,
                     holm=holm,
                     practical_effect_threshold=spec.practical_effect_threshold,
@@ -937,11 +1119,16 @@ def _decision_record(
 
 __all__ = [
     "ATTRIBUTION_COMPARATOR_ID",
+    "DEFAULT_VALIDATED_NEGATIVE_MULTIPLICITY",
     "EFFICACY_COMPARATOR_IDS",
     "FOCAL_POLICY_ID",
     "NEGATIVE_CONTROL_POLICY_ID",
     "REQUIRED_SCIENTIFIC_GUARDRAILS",
     "SERIOUS_COMPARATOR_IDS",
+    "VALIDATED_NEGATIVE_ADJUSTED_CONFIDENCE_LEVEL",
+    "VALIDATED_NEGATIVE_FAMILYWISE_ALPHA",
+    "VALIDATED_NEGATIVE_GATE_IDS",
+    "VALIDATED_NEGATIVE_MULTIPLICITY_SHA256",
     "ComparatorRole",
     "EfficacyAnalysisSpec",
     "EfficacyComparisonResult",
@@ -950,6 +1137,7 @@ __all__ = [
     "GuardrailCleanTaskScore",
     "LimitationDisposition",
     "LimitationKind",
+    "NegativeSideEvidence",
     "ScientificDecisionInput",
     "ScientificDecisionRecord",
     "ScientificDecisionState",
@@ -961,7 +1149,9 @@ __all__ = [
     "ScientificGuardrailStatus",
     "ScientificLimitation",
     "ScientificReasonCode",
+    "ValidatedNegativeMultiplicitySpec",
     "decide_scientific_outcome",
     "evaluate_efficacy_comparisons",
     "guardrail_clean_task_difference",
+    "negative_side_evidence",
 ]

@@ -13,10 +13,15 @@ from pydantic import Field, field_serializer, field_validator, model_validator
 from neurallm.domain.models import FiniteFloat, NonNegativeInt, PositiveInt, SqliteInt64
 from neurallm.evaluation.models import BootstrapResult
 from neurallm.evaluation.scientific import (
+    DEFAULT_VALIDATED_NEGATIVE_MULTIPLICITY,
+    SERIOUS_COMPARATOR_IDS,
+    NegativeSideEvidence,
     ScientificEvidenceGate,
     ScientificEvidenceKind,
     ScientificEvidenceStatus,
     ScientificFrozenModel,
+    ValidatedNegativeMultiplicitySpec,
+    negative_side_evidence,
 )
 from neurallm.evaluation.statistics import paired_bootstrap_ci
 
@@ -36,7 +41,14 @@ class RecoveryAnalysisSpec(ScientificFrozenModel):
     """Frozen practical thresholds and deterministic bootstrap settings."""
 
     schema_version: Literal[1] = 1
-    implementation_version: Literal["output-recovery-v1"] = "output-recovery-v1"
+    implementation_version: Literal["output-recovery-v2"] = "output-recovery-v2"
+    serious_comparator_ids: tuple[
+        Literal["best_static"],
+        Literal["heuristic_adaptive"],
+    ] = SERIOUS_COMPARATOR_IDS
+    comparator_reduction_version: Literal["per-unit-minimum-serious-comparator-margin-v1"] = (
+        "per-unit-minimum-serious-comparator-margin-v1"
+    )
     no_return_handling_version: Literal["right-censored-window-plus-one-v1"] = (
         "right-censored-window-plus-one-v1"
     )
@@ -44,6 +56,23 @@ class RecoveryAnalysisSpec(ScientificFrozenModel):
     bootstrap_resamples: PositiveInt = 10_000
     confidence_level: float = Field(default=0.95, gt=0.0, lt=1.0, allow_inf_nan=False)
     bootstrap_seed: SqliteInt64
+
+    @field_validator("serious_comparator_ids", mode="before")
+    @classmethod
+    def _accept_comparator_list(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
+
+    @field_validator("serious_comparator_ids")
+    @classmethod
+    def _require_exact_comparators(
+        cls,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if values != SERIOUS_COMPARATOR_IDS:
+            raise ValueError("recovery requires the exact serious comparator set")
+        return values
 
     @field_validator("practical_thresholds", mode="before")
     @classmethod
@@ -87,6 +116,7 @@ class RecoveryMetricResult(ScientificFrozenModel):
     unit_count: PositiveInt
     estimate: FiniteFloat
     bootstrap: BootstrapResult
+    negative_side_evidence: NegativeSideEvidence
     practical_effect_threshold: float = Field(ge=0.0, allow_inf_nan=False)
     status: ScientificEvidenceStatus
 
@@ -106,14 +136,29 @@ class RecoveryMetricResult(ScientificFrozenModel):
 
     @model_validator(mode="after")
     def _validate_statistics_and_status(self) -> Self:
-        if self.bootstrap.sample_size != self.unit_count or not isclose(
-            self.estimate,
-            self.bootstrap.estimate,
-            abs_tol=1e-15,
+        if (
+            self.bootstrap.sample_size != self.unit_count
+            or self.negative_side_evidence.bootstrap.sample_size != self.unit_count
+            or not isclose(self.estimate, self.bootstrap.estimate, abs_tol=1e-15)
+            or not isclose(
+                self.estimate,
+                self.negative_side_evidence.bootstrap.estimate,
+                abs_tol=1e-15,
+            )
         ):
             raise ValueError("recovery result statistics do not describe the same matched units")
+        if (
+            self.negative_side_evidence.gate_id != f"recovery:{self.metric_name.value}"
+            or not isclose(
+                self.negative_side_evidence.practical_effect_threshold,
+                self.practical_effect_threshold,
+                abs_tol=1e-15,
+            )
+        ):
+            raise ValueError("recovery negative-side evidence targets the wrong frozen gate")
         expected = _classify_recovery_metric(
             self.bootstrap,
+            self.negative_side_evidence,
             self.practical_effect_threshold,
         )
         if self.status is not expected:
@@ -125,7 +170,7 @@ class RecoveryEvaluationResult(ScientificFrozenModel):
     """Complete required recovery evidence or one explicit invalid result."""
 
     evidence_kind: Literal[ScientificEvidenceKind.RECOVERY] = ScientificEvidenceKind.RECOVERY
-    implementation_version: Literal["output-recovery-v1"] = "output-recovery-v1"
+    implementation_version: Literal["output-recovery-v2"] = "output-recovery-v2"
     metric_results: tuple[RecoveryMetricResult, ...] = ()
     right_censored_focal_units: NonNegativeInt = 0
     right_censored_comparator_units: NonNegativeInt = 0
@@ -241,6 +286,9 @@ def evaluate_recovery(
     paired_improvements: Mapping[RecoveryMetricName | str, Sequence[float]],
     *,
     spec: RecoveryAnalysisSpec,
+    negative_multiplicity: ValidatedNegativeMultiplicitySpec = (
+        DEFAULT_VALIDATED_NEGATIVE_MULTIPLICITY
+    ),
     right_censored_focal_units: int = 0,
     right_censored_comparator_units: int = 0,
 ) -> RecoveryEvaluationResult:
@@ -248,6 +296,8 @@ def evaluate_recovery(
 
     if not isinstance(spec, RecoveryAnalysisSpec):
         raise TypeError("spec must be a RecoveryAnalysisSpec")
+    if not isinstance(negative_multiplicity, ValidatedNegativeMultiplicitySpec):
+        raise TypeError("negative_multiplicity must be a ValidatedNegativeMultiplicitySpec")
     if (
         not isinstance(right_censored_focal_units, int)
         or isinstance(right_censored_focal_units, bool)
@@ -280,7 +330,12 @@ def evaluate_recovery(
         )
     try:
         results = tuple(
-            _recovery_metric_result(metric_name, values[metric_name], spec)
+            _recovery_metric_result(
+                metric_name,
+                values[metric_name],
+                spec,
+                negative_multiplicity,
+            )
             for metric_name in RECOVERY_METRIC_NAMES
         )
     except (TypeError, ValueError):
@@ -314,6 +369,7 @@ def _recovery_metric_result(
     metric_name: RecoveryMetricName,
     differences: tuple[float, ...],
     spec: RecoveryAnalysisSpec,
+    negative_multiplicity: ValidatedNegativeMultiplicitySpec,
 ) -> RecoveryMetricResult:
     bootstrap = paired_bootstrap_ci(
         differences,
@@ -322,23 +378,33 @@ def _recovery_metric_result(
         seed=spec.bootstrap_seed,
     )
     threshold = spec.practical_thresholds[metric_name]
+    negative_evidence = negative_side_evidence(
+        differences,
+        gate_id=f"recovery:{metric_name.value}",
+        practical_effect_threshold=threshold,
+        resamples=spec.bootstrap_resamples,
+        seed=spec.bootstrap_seed,
+        multiplicity=negative_multiplicity,
+    )
     return RecoveryMetricResult(
         metric_name=metric_name,
         unit_count=len(differences),
         estimate=bootstrap.estimate,
         bootstrap=bootstrap,
+        negative_side_evidence=negative_evidence,
         practical_effect_threshold=threshold,
-        status=_classify_recovery_metric(bootstrap, threshold),
+        status=_classify_recovery_metric(bootstrap, negative_evidence, threshold),
     )
 
 
 def _classify_recovery_metric(
     bootstrap: BootstrapResult,
+    negative_evidence: NegativeSideEvidence,
     practical_effect_threshold: float,
 ) -> ScientificEvidenceStatus:
     if bootstrap.estimate >= practical_effect_threshold and bootstrap.lower > 0.0:
         return ScientificEvidenceStatus.PASS
-    if bootstrap.upper < practical_effect_threshold:
+    if negative_evidence.decisive_negative:
         return ScientificEvidenceStatus.DECISIVE_NEGATIVE
     return ScientificEvidenceStatus.INCONCLUSIVE
 
