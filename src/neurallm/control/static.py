@@ -1,8 +1,9 @@
-"""A fixed no-op policy used to exercise the Phase 2 experiment kernel."""
+"""Fixed Phase 2 control and development-selected Phase 3 static baseline."""
 
 from __future__ import annotations
 
 from neurallm.control.policy import PolicyContext, PolicyState, PolicyTrace
+from neurallm.control.specs import BestStaticPolicySpec
 from neurallm.domain.models import ControllerAction, ControllerObservation
 
 
@@ -47,4 +48,17 @@ class FixedPolicy:
         )
 
 
-__all__ = ["FixedPolicy"]
+class BestStaticPolicy(FixedPolicy):
+    """Use the development-selected plan profile without modifying it."""
+
+    __slots__ = ("spec",)
+
+    def __init__(self, spec: BestStaticPolicySpec | None = None) -> None:
+        resolved_spec = spec if spec is not None else BestStaticPolicySpec()
+        if not isinstance(resolved_spec, BestStaticPolicySpec):
+            raise TypeError("spec must be a BestStaticPolicySpec")
+        super().__init__(resolved_spec.policy_id)
+        self.spec = resolved_spec
+
+
+__all__ = ["BestStaticPolicy", "FixedPolicy"]

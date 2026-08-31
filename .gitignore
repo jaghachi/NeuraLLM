@@ -207,6 +207,7 @@ tempCodeRunnerFile.py
 .ruff_cache/
 
 # NeuraLLM local run artifacts
+.tmp/
 runs/
 artifacts/
 *.sqlite3

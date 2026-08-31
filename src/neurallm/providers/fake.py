@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from neurallm.domain.models import ProviderIdentity
+from neurallm.domain.models import DecodingParameters, ProviderIdentity
 from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.providers.base import (
     GenerationMetadata,
@@ -20,8 +20,21 @@ class _FakeProviderConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     provider_type: Literal["fake"] = "fake"
-    implementation_version: Literal["1.0.0"] = "1.0.0"
-    generation_method: Literal["request_sha256_v1"] = "request_sha256_v1"
+    implementation_version: Literal["2.0.0"] = "2.0.0"
+    generation_method: Literal["fake_provider_visible_sha256_v2"] = (
+        "fake_provider_visible_sha256_v2"
+    )
+
+
+class _FakeProviderVisibleInputs(BaseModel):
+    """Only inputs visible to the provider when generating response content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    prompt: str
+    decoding_parameters: DecodingParameters
+    provider_identity: ProviderIdentity
+    provider_configuration: _FakeProviderConfiguration
 
 
 class FakeProvider:
@@ -52,18 +65,30 @@ class FakeProvider:
         return fake_provider_effective_configuration_json()
 
     def generate(self, request: GenerationRequest) -> GenerationResponse:
-        """Generate a deterministic response and echo effective settings."""
+        """Generate from provider-visible inputs and retain full request evidence."""
 
         if request.provider_identity_id != self.provider_identity.identity_id:
             raise ProviderIdentityMismatchError(
                 "generation request provider identity does not match FakeProvider"
             )
         request_sha256 = canonical_sha256(request)
+        configuration = _FakeProviderConfiguration()
+        visible_inputs_sha256 = canonical_sha256(
+            _FakeProviderVisibleInputs(
+                prompt=request.prompt,
+                decoding_parameters=request.decoding_parameters,
+                provider_identity=self.provider_identity,
+                provider_configuration=configuration,
+            )
+        )
         return GenerationResponse(
-            text=f"fake-response:{request_sha256}",
+            text=f"fake-response-v2:{visible_inputs_sha256}",
             provider_identity=self.provider_identity,
             effective_parameters=request.decoding_parameters,
-            raw_metadata=GenerationMetadata(request_sha256=request_sha256),
+            raw_metadata=GenerationMetadata(
+                request_sha256=request_sha256,
+                generation_method=configuration.generation_method,
+            ),
         )
 
 

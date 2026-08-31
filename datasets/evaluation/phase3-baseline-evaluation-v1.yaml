@@ -1,0 +1,410 @@
+# Sealed offline engineering fixture; it is not a completed confirmatory evaluation.
+schema_version: 1
+dataset_id: phase3-baseline-evaluation
+version: phase3-baseline-evaluation-v1
+purpose: evaluation
+sequences:
+  - sequence_id: eval-constrained-a
+    cases:
+      - case_id: eval-constrained-a-0
+        prompt_family: constrained_instruction
+        prompt: Describe a safe release handoff using four numbered lines labeled 1., 2., 3., and 4.
+        prompt_features:
+          constraint_count: 4.0
+          target_length: 80.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - "1."
+            - "2."
+            - "3."
+            - "4."
+      - case_id: eval-constrained-a-1
+        prompt_family: constrained_instruction
+        prompt: Return a JSON object for the handoff with the keys owner, artifact, and approval.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 80.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - owner
+            - artifact
+            - approval
+      - case_id: eval-constrained-a-2
+        prompt_family: constrained_instruction
+        prompt: State the fallback and include both ROLLBACK and VERIFY.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 64.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - ROLLBACK
+            - VERIFY
+      - case_id: eval-constrained-a-3
+        prompt_family: constrained_instruction
+        prompt: Return exactly RELEASE_READY.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+        validator:
+          kind: exact_match
+          expected_text: RELEASE_READY
+
+  - sequence_id: eval-constrained-b
+    cases:
+      - case_id: eval-constrained-b-0
+        prompt_family: constrained_instruction
+        prompt: Give a compact incident triage response containing severity, scope, and owner.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 72.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - severity
+            - scope
+            - owner
+      - case_id: eval-constrained-b-1
+        prompt_family: constrained_instruction
+        prompt: Return a JSON object with the keys symptom, check, and escalation.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 72.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - symptom
+            - check
+            - escalation
+      - case_id: eval-constrained-b-2
+        prompt_family: constrained_instruction
+        prompt: Provide four labeled checks and include CHECK-A, CHECK-B, CHECK-C, and CHECK-D.
+        prompt_features:
+          constraint_count: 4.0
+          target_length: 72.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - CHECK-A
+            - CHECK-B
+            - CHECK-C
+            - CHECK-D
+      - case_id: eval-constrained-b-3
+        prompt_family: constrained_instruction
+        prompt: Return exactly TRIAGED.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+        validator:
+          kind: exact_match
+          expected_text: TRIAGED
+
+  - sequence_id: eval-longform-a
+    cases:
+      - case_id: eval-longform-a-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: At approximately 160 tokens, explain how a wetland absorbs flood risk. Include marsh, sediment, and overflow.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.7
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - marsh
+            - sediment
+            - overflow
+      - case_id: eval-longform-a-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue at approximately 160 tokens with distinct evidence about habitat, filtration, and seasonality.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.8
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - habitat
+            - filtration
+            - seasonality
+      - case_id: eval-longform-a-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Add an approximately 160-token failure scenario containing drought, channel, and erosion without repeating the prior conclusion.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - drought
+            - channel
+            - erosion
+      - case_id: eval-longform-a-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Synthesize at approximately 160 tokens and include restoration, buffer, and monitoring with a new closing sentence.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.9
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - restoration
+            - buffer
+            - monitoring
+
+  - sequence_id: eval-longform-b
+    cases:
+      - case_id: eval-longform-b-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Write approximately 160 tokens on reliable cold-chain logistics. Include sensor, package, and route.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.7
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - sensor
+            - package
+            - route
+      - case_id: eval-longform-b-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue at approximately 160 tokens with a distinct account of delay, threshold, and inspection.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.8
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - delay
+            - threshold
+            - inspection
+      - case_id: eval-longform-b-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Describe an approximately 160-token stress case with outage, transfer, and spoilage while avoiding a looping conclusion.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - outage
+            - transfer
+            - spoilage
+      - case_id: eval-longform-b-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Finish at approximately 160 tokens with a fresh recovery plan containing reserve, audit, and alert.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.9
+          target_length: 160.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - reserve
+            - audit
+            - alert
+
+  - sequence_id: eval-mixed-a
+    cases:
+      - case_id: eval-mixed-a-0
+        prompt_family: mixed_transition
+        prompt: Return a JSON object with keys signal and cause for a noisy vibration sensor.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 64.0
+          transition_intensity: 0.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - signal
+            - cause
+      - case_id: eval-mixed-a-1
+        prompt_family: mixed_transition
+        prompt: Switch to prose and explain the issue using resonance and mounting.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 96.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - resonance
+            - mounting
+      - case_id: eval-mixed-a-2
+        prompt_family: mixed_transition
+        prompt: Discard the prior format and return exactly PAUSE.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+          transition_intensity: 1.0
+        validator:
+          kind: exact_match
+          expected_text: PAUSE
+      - case_id: eval-mixed-a-3
+        prompt_family: mixed_transition
+        prompt: Recover with a JSON object containing adjustment, verification, and result.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 80.0
+          transition_intensity: 1.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - adjustment
+            - verification
+            - result
+
+  - sequence_id: eval-mixed-b
+    cases:
+      - case_id: eval-mixed-b-0
+        prompt_family: mixed_transition
+        prompt: Explain a library catalog mismatch and include record and shelf.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 80.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - record
+            - shelf
+      - case_id: eval-mixed-b-1
+        prompt_family: mixed_transition
+        prompt: Switch to a JSON object with keys identifier, location, and status.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 80.0
+          transition_intensity: 1.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - identifier
+            - location
+            - status
+      - case_id: eval-mixed-b-2
+        prompt_family: mixed_transition
+        prompt: Now give a prose correction containing catalog and rescan.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 80.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - catalog
+            - rescan
+      - case_id: eval-mixed-b-3
+        prompt_family: mixed_transition
+        prompt: Return exactly CATALOG_FIXED.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+          transition_intensity: 1.0
+        validator:
+          kind: exact_match
+          expected_text: CATALOG_FIXED
+
+  - sequence_id: eval-creative-a
+    cases:
+      - case_id: eval-creative-a-0
+        prompt_family: creative_constrained
+        prompt: Write a compact scene in a desert observatory containing telescope, sand, and copper.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - telescope
+            - sand
+            - copper
+      - case_id: eval-creative-a-1
+        prompt_family: creative_constrained
+        prompt: Continue from a visitor's viewpoint and include map, eclipse, and whisper.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - map
+            - eclipse
+            - whisper
+      - case_id: eval-creative-a-2
+        prompt_family: creative_constrained
+        prompt: Return a JSON object for the scene with keys place, instrument, and sound.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - place
+            - instrument
+            - sound
+      - case_id: eval-creative-a-3
+        prompt_family: creative_constrained
+        prompt: End with one sentence containing horizon and midnight.
+        prompt_features:
+          constraint_count: 2.0
+          target_length: 40.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - horizon
+            - midnight
+
+  - sequence_id: eval-creative-b
+    cases:
+      - case_id: eval-creative-b-0
+        prompt_family: creative_constrained
+        prompt: Draft a compact audio-guide scene containing violin, station, and rain.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - violin
+            - station
+            - rain
+      - case_id: eval-creative-b-1
+        prompt_family: creative_constrained
+        prompt: Revise it from the conductor's viewpoint and include platform, clock, and echo.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - platform
+            - clock
+            - echo
+      - case_id: eval-creative-b-2
+        prompt_family: creative_constrained
+        prompt: Express the scene as a JSON object with keys character, object, and weather.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 96.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - character
+            - object
+            - weather
+      - case_id: eval-creative-b-3
+        prompt_family: creative_constrained
+        prompt: Return exactly CURTAIN.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+        validator:
+          kind: exact_match
+          expected_text: CURTAIN

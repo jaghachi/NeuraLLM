@@ -1,4 +1,4 @@
-"""Explicit, machine-readable NeuraLLM Phase 2 command-line interface."""
+"""Explicit, machine-readable NeuraLLM Phase 3 command-line interface."""
 
 from __future__ import annotations
 
@@ -112,8 +112,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "package": "neurallm",
                     "version": __version__,
-                    "implementation_phase": 2,
+                    "implementation_phase": 3,
                     "phase_2_kernel_available": True,
+                    "phase_3_baseline_evaluator_available": True,
                     "scientific_decision": None,
                     "live_provider_validated": False,
                 }
@@ -152,6 +153,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "manifest_sha256": result.execution.manifest_sha256,
                     "scientific_result_sha256": (result.artifacts.scientific_result_sha256),
                     "artifact_names": list(result.artifacts.artifact_names),
+                    "implementation_phase": result.artifacts.implementation_phase,
+                    "phase3_baseline_evaluator_verdict": (
+                        result.artifacts.phase3_baseline_evaluator_verdict
+                    ),
                 }
             )
             _print(payload)
@@ -167,6 +172,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "scientific_result_sha256": summary.scientific_result_sha256,
                     "committed_turns": summary.committed_turns,
                     "artifact_names": list(summary.artifact_names),
+                    "implementation_phase": summary.implementation_phase,
+                    "phase3_baseline_evaluator_verdict": (
+                        summary.phase3_baseline_evaluator_verdict
+                    ),
                     "scientific_decision": None,
                 }
             )

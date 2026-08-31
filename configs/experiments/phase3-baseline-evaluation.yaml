@@ -1,0 +1,210 @@
+# Offline engineering fixture only; it is not confirmatory or live-provider evidence.
+schema_version: 1
+experiment_id: phase3-baseline-evaluator-offline
+dataset:
+  path: ../../datasets/evaluation/phase3-baseline-evaluation-v1.yaml
+  version: phase3-baseline-evaluation-v1
+  purpose: evaluation
+  expected_dataset_sha256: de4c415d71cc3ed0177b189880fa9da040464f41ab14b192bab01cb4eed09199
+  seal:
+    schema_version: 1
+    seal_protocol_version: dataset-seal-v1
+    purpose: evaluation
+    dataset_id: phase3-baseline-evaluation
+    dataset_version: phase3-baseline-evaluation-v1
+    dataset_sha256: de4c415d71cc3ed0177b189880fa9da040464f41ab14b192bab01cb4eed09199
+provider:
+  kind: fake
+  expected_identity:
+    provider_type: fake
+    implementation_version: 2.0.0
+    model_alias: deterministic-fake
+    build_id: builtin
+    provider_config_hash: 62dd2cef1f89c1ba05ecef467ecd094c6ed2107f30a303ab81e2a7eef2dcf8f7
+    model_path: null
+    model_sha256: null
+    chat_template_sha256: null
+  expected_effective_configuration_json: '{"generation_method":"fake_provider_visible_sha256_v2","implementation_version":"2.0.0","provider_type":"fake"}'
+policy_specs:
+  - kind: best_static
+    policy_id: best_static
+    implementation_version: best-static-v1
+    state_schema_version: stateless-v1
+    history_access: none
+  - kind: heuristic_adaptive
+    policy_id: heuristic_adaptive
+    implementation_version: heuristic-adaptive-v1
+    state_schema_version: heuristic-adaptive-state-v1
+    history_access: own_previous_response
+    high_repetition_threshold: 0.2
+    minimum_instruction_adherence: 0.9
+    minimum_response_length_tokens: 8
+    maximum_response_length_tokens: 256
+    repetition_reaction_fraction: 0.75
+    adherence_reaction_fraction: 0.5
+    length_reaction_fraction: 0.25
+    clean_decay_fraction: 0.5
+  - kind: random_matched
+    policy_id: random_matched
+    implementation_version: random-matched-sha256-v1
+    state_schema_version: random-matched-state-v1
+    history_access: none
+evaluation:
+  schema_version: 1
+  implementation_version: phase3-evaluator-v1
+  primary_metric: task_score
+  sequence_aggregation_version: mean-controller-seed-then-turn-v1
+  focal_policy_id: heuristic_adaptive
+  required_serious_comparator_ids:
+    - best_static
+  negative_control_policy_ids:
+    - random_matched
+  bootstrap_resamples: 10000
+  confidence_level: 0.95
+  bootstrap_seed: 3001
+  permutation_resamples: 10000
+  permutation_seed: 3002
+  permutation_method_version: paired-sign-flip-exact-or-monte-carlo-v1
+  multiplicity_correction_version: holm-v1
+  practical_effect_threshold: 0.02
+  equivalence_margin: 0.005
+  maximum_adherence_regression: 0.01
+  maximum_length_reduction_ratio: 0.05
+  maximum_action_saturation_rate: 0.05
+  required_matched_coverage: 1.0
+  behavioral_alias_tolerance: 0.0
+development_selection_input:
+  dataset:
+    path: ../../datasets/development/phase3-baseline-development-v1.yaml
+    version: phase3-baseline-development-v1
+    purpose: development
+    expected_dataset_sha256: a6c41a046cb84bc9a806866a7393196784eb769118f74cbe4d44d0f3e247df97
+static_selection_record:
+  # Deterministic development-only fixture scores exercise the frozen selection contract.
+  schema_version: 1
+  implementation_version: development-static-selection-v1
+  dataset_purpose: development
+  development_dataset_sha256: a6c41a046cb84bc9a806866a7393196784eb769118f74cbe4d44d0f3e247df97
+  # Canonical prompt-sequence x model-seed order for every candidate score vector below.
+  development_unit_keys:
+    - {prompt_sequence_id: dev-constrained-format, model_seed: 1101}
+    - {prompt_sequence_id: dev-constrained-format, model_seed: 1102}
+    - {prompt_sequence_id: dev-creative-constrained, model_seed: 1101}
+    - {prompt_sequence_id: dev-creative-constrained, model_seed: 1102}
+    - {prompt_sequence_id: dev-creative-revision, model_seed: 1101}
+    - {prompt_sequence_id: dev-creative-revision, model_seed: 1102}
+    - {prompt_sequence_id: dev-longform-exposition, model_seed: 1101}
+    - {prompt_sequence_id: dev-longform-exposition, model_seed: 1102}
+    - {prompt_sequence_id: dev-longform-recovery, model_seed: 1101}
+    - {prompt_sequence_id: dev-longform-recovery, model_seed: 1102}
+    - {prompt_sequence_id: dev-mixed-transition, model_seed: 1101}
+    - {prompt_sequence_id: dev-mixed-transition, model_seed: 1102}
+  selection_metric: mean-sequence-task-score-v1
+  tie_break_rule: highest-mean-then-lexical-profile-id-v1
+  candidate_results:
+    - profile:
+        profile_id: static-balanced-v1
+        temperature: 0.7
+        top_p: 0.9
+        top_k: 40
+        presence_penalty: 0.0
+        max_tokens: 192
+      unit_scores:
+        - 0.82
+        - 0.84
+        - 0.79
+        - 0.81
+        - 0.86
+        - 0.85
+        - 0.80
+        - 0.83
+        - 0.78
+        - 0.82
+        - 0.84
+        - 0.81
+    - profile:
+        profile_id: static-conservative-v1
+        temperature: 0.55
+        top_p: 0.85
+        top_k: 30
+        presence_penalty: 0.0
+        max_tokens: 192
+      unit_scores:
+        - 0.80
+        - 0.80
+        - 0.78
+        - 0.79
+        - 0.81
+        - 0.82
+        - 0.79
+        - 0.80
+        - 0.77
+        - 0.80
+        - 0.81
+        - 0.79
+    - profile:
+        profile_id: static-exploratory-v1
+        temperature: 0.85
+        top_p: 0.95
+        top_k: 60
+        presence_penalty: 0.1
+        max_tokens: 192
+      unit_scores:
+        - 0.78
+        - 0.82
+        - 0.77
+        - 0.79
+        - 0.84
+        - 0.83
+        - 0.76
+        - 0.81
+        - 0.75
+        - 0.79
+        - 0.82
+        - 0.78
+  winning_profile:
+    profile_id: static-balanced-v1
+    temperature: 0.7
+    top_p: 0.9
+    top_k: 40
+    presence_penalty: 0.0
+    max_tokens: 192
+  selection_result_sha256: 19be248a50cf6504011168d1e79e3e3cd24d1027017a6cbec443b9019a0bf301
+model_seeds:
+  - 1301
+  - 1302
+controller_seeds:
+  - 2301
+  - 2302
+base_decoding_profile_id: static-balanced-v1
+base_decoding_profile:
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  presence_penalty: 0.0
+  max_tokens: 192
+action_bounds:
+  temperature_delta: [-0.1, 0.1]
+  top_p_delta: [-0.05, 0.05]
+  top_k_delta: [-10, 10]
+  presence_penalty_delta: [-0.2, 0.2]
+decoding_bounds:
+  temperature: [0.01, 2.0]
+  top_p: [0.01, 1.0]
+  top_k: [0, 200]
+  presence_penalty: [-2.0, 2.0]
+metric_versions:
+  distinct_2: distinct-2gram-unicode-nfkc-casefold-whitespace-v1
+  distinct_3: distinct-3gram-unicode-nfkc-casefold-whitespace-v1
+  format_validity: validator-v1
+  instruction_adherence: validator-v1
+  late_window_repetition_ratio: late-quarter-unicode-nfkc-casefold-whitespace-v1
+  repeated_3_gram_ratio: repeated-3gram-unicode-nfkc-casefold-whitespace-v1
+  repeated_4_gram_ratio: repeated-4gram-unicode-nfkc-casefold-whitespace-v1
+  repetition_ratio: token-repetition-unicode-nfkc-casefold-whitespace-v1
+  response_length_tokens: unicode-nfkc-casefold-whitespace-v1
+  semantic_similarity: semantic-unavailable-v1
+  task_score: validator-v1
+decision_rule_version: phase3-baseline-evaluator-v1
+database_schema_version: 2
+artifact_root: ../../runs/phase3-baseline-evaluator-offline

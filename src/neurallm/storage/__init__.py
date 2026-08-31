@@ -13,16 +13,22 @@ from neurallm.storage.errors import (
 )
 from neurallm.storage.migrations import CURRENT_SCHEMA_VERSION
 from neurallm.storage.models import (
+    AnalysisFinalization,
+    AnalysisManifest,
     CommittedHistory,
     HistoryBinding,
     ResumeAction,
     RunFinalization,
+    StoredAnalysis,
     StoredTurn,
+    TurnInputEvidence,
     TurnState,
 )
 from neurallm.storage.sqlite import SQLiteRunStore
 
 __all__ = [
+    "AnalysisFinalization",
+    "AnalysisManifest",
     "CURRENT_SCHEMA_VERSION",
     "CommittedHistory",
     "DuplicateLogicalRequestError",
@@ -38,6 +44,8 @@ __all__ = [
     "StoreCorruptionError",
     "StoreInvariantError",
     "StoredTurn",
+    "StoredAnalysis",
+    "TurnInputEvidence",
     "TurnState",
     "UncertainDispatchError",
 ]

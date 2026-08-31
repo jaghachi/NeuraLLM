@@ -319,6 +319,10 @@ class RunManifest(StrictFrozenModel):
     decoding_bounds: DecodingBounds = DecodingBounds()
     decision_rule_version: NonEmptyString
     database_schema_version: PositiveInt
+    phase3_analysis_contract_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("policy_config_hashes", "metric_versions")
     @classmethod
@@ -359,4 +363,9 @@ class RunManifest(StrictFrozenModel):
             raise ValueError(
                 "provider effective configuration must be finite canonical JSON"
             ) from exc
+        phase3 = self.decision_rule_version == "phase3-baseline-evaluator-v1"
+        if phase3 and self.phase3_analysis_contract_sha256 is None:
+            raise ValueError("Phase 3 run manifest requires its pre-execution analysis contract")
+        if not phase3 and self.phase3_analysis_contract_sha256 is not None:
+            raise ValueError("only a Phase 3 run manifest may carry an analysis contract")
         return self

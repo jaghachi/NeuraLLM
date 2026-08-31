@@ -1,1 +1,1 @@
-"""Cross-module Phase 2 integration tests."""
+"""Cross-module integration tests through Phase 3."""

@@ -14,6 +14,12 @@ from pydantic import BaseModel, ValidationError
 from neurallm.control.policy import PolicyState, PolicyTrace
 from neurallm.domain.models import ExperimentCondition, ResponseMetrics, RunManifest
 from neurallm.domain.serialization import canonical_json, canonical_sha256
+from neurallm.evaluation.contract import phase3_analysis_contract_sha256
+from neurallm.evaluation.models import (
+    GuardrailResult,
+    PairwiseComparisonResult,
+    Phase3EvaluationResult,
+)
 from neurallm.providers.base import (
     GenerationRequest,
     GenerationResponse,
@@ -35,11 +41,15 @@ from neurallm.storage.migrations import (
     MIGRATIONS,
 )
 from neurallm.storage.models import (
+    AnalysisFinalization,
+    AnalysisManifest,
     CommittedHistory,
     HistoryBinding,
     ResumeAction,
     RunFinalization,
+    StoredAnalysis,
     StoredTurn,
+    TurnInputEvidence,
     TurnState,
 )
 
@@ -47,6 +57,11 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 PolicyStateT = TypeVar("PolicyStateT", bound=PolicyState)
 
 _EXPECTED_SCHEMA_OBJECTS = {
+    ("table", "analysis_decision"),
+    ("table", "analysis_finalization"),
+    ("table", "analysis_manifest"),
+    ("table", "comparison_results"),
+    ("table", "guardrail_results"),
     ("index", "turns_schedule_index"),
     ("index", "turns_state_index"),
     ("table", "history_commitments"),
@@ -55,7 +70,11 @@ _EXPECTED_SCHEMA_OBJECTS = {
     ("table", "run_manifest"),
     ("table", "schema_migrations"),
     ("table", "turn_metrics"),
+    ("table", "turn_inputs"),
     ("table", "turns"),
+    ("trigger", "comparisons_insert_after_analysis_finalization_guard"),
+    ("trigger", "guardrails_insert_after_analysis_finalization_guard"),
+    ("trigger", "turn_inputs_insert_after_run_finalization_guard"),
     ("trigger", "turns_forward_state_guard"),
     ("trigger", "turns_insert_after_finalization_guard"),
 }
@@ -147,9 +166,9 @@ class SQLiteRunStore:
 
         if not isinstance(manifest, RunManifest):
             raise TypeError("manifest must be a RunManifest")
-        if manifest.database_schema_version != CURRENT_SCHEMA_VERSION:
+        if not 1 <= manifest.database_schema_version <= CURRENT_SCHEMA_VERSION:
             raise SchemaVersionError(
-                "manifest database_schema_version does not match the storage schema"
+                "manifest database_schema_version is not supported by this storage schema"
             )
         manifest_json = canonical_json(manifest)
         manifest_sha256 = canonical_sha256(manifest)
@@ -189,8 +208,8 @@ class SQLiteRunStore:
             manifest_sha256,
             "run manifest",
         )
-        if manifest.database_schema_version != CURRENT_SCHEMA_VERSION:
-            raise StoreCorruptionError("stored manifest names another database schema version")
+        if not 1 <= manifest.database_schema_version <= CURRENT_SCHEMA_VERSION:
+            raise StoreCorruptionError("stored manifest names an unsupported database schema")
         return manifest
 
     def finalize_run(
@@ -271,10 +290,298 @@ class SQLiteRunStore:
         self._validate_finalization_against_store(finalization, stored=True)
         return finalization
 
+    def persist_analysis(
+        self,
+        manifest: AnalysisManifest,
+        result: Phase3EvaluationResult,
+    ) -> AnalysisFinalization:
+        """Atomically persist and close one complete Phase 3 analysis, idempotently."""
+
+        if not isinstance(manifest, AnalysisManifest):
+            raise TypeError("manifest must be an AnalysisManifest")
+        if not isinstance(result, Phase3EvaluationResult):
+            raise TypeError("result must be a Phase3EvaluationResult")
+        comparisons = tuple(result.comparisons)
+        guardrails = tuple(result.global_guardrails) + tuple(
+            guardrail for comparison in comparisons for guardrail in comparison.guardrails
+        )
+        comparison_payloads = tuple(
+            sorted(
+                (
+                    (
+                        canonical_sha256(comparison),
+                        canonical_json(comparison),
+                        comparison,
+                    )
+                    for comparison in comparisons
+                ),
+                key=lambda payload: payload[0],
+            )
+        )
+        guardrail_payloads = tuple(
+            sorted(
+                (
+                    (canonical_sha256(guardrail), canonical_json(guardrail), guardrail)
+                    for guardrail in guardrails
+                ),
+                key=lambda payload: payload[0],
+            )
+        )
+        comparison_hashes = tuple(payload[0] for payload in comparison_payloads)
+        guardrail_hashes = tuple(payload[0] for payload in guardrail_payloads)
+        if len(comparison_hashes) != len(set(comparison_hashes)):
+            raise StoreInvariantError("analysis contains duplicate comparison evidence")
+        if not guardrail_hashes or len(guardrail_hashes) != len(set(guardrail_hashes)):
+            raise StoreInvariantError("analysis guardrail evidence must be nonempty and unique")
+
+        with self._transaction():
+            self._validate_analysis_binding(manifest, result, stored=False)
+            manifest_json = canonical_json(manifest)
+            manifest_sha256 = canonical_sha256(manifest)
+            manifest_row = self._connection.execute(
+                """
+                SELECT manifest_json, manifest_sha256
+                FROM analysis_manifest
+                WHERE singleton_id = 1
+                """
+            ).fetchone()
+            if manifest_row is None:
+                self._connection.execute(
+                    """
+                    INSERT INTO analysis_manifest(
+                        singleton_id,
+                        manifest_json,
+                        manifest_sha256
+                    ) VALUES (1, ?, ?)
+                    """,
+                    (manifest_json, manifest_sha256),
+                )
+            elif (
+                self._required_text(manifest_row, "manifest_json") != manifest_json
+                or self._required_text(manifest_row, "manifest_sha256") != manifest_sha256
+            ):
+                raise StoreInvariantError("run store is bound to another analysis manifest")
+
+            for comparison_id, result_json, _ in comparison_payloads:
+                self._persist_analysis_member(
+                    table="comparison_results",
+                    id_column="comparison_id",
+                    member_id=comparison_id,
+                    result_json=result_json,
+                )
+            for guardrail_id, result_json, _ in guardrail_payloads:
+                self._persist_analysis_member(
+                    table="guardrail_results",
+                    id_column="guardrail_id",
+                    member_id=guardrail_id,
+                    result_json=result_json,
+                )
+
+            decision_json = canonical_json(result)
+            decision_sha256 = canonical_sha256(result)
+            decision_row = self._connection.execute(
+                """
+                SELECT decision_json, decision_sha256
+                FROM analysis_decision
+                WHERE singleton_id = 1
+                """
+            ).fetchone()
+            if decision_row is None:
+                self._connection.execute(
+                    """
+                    INSERT INTO analysis_decision(
+                        singleton_id,
+                        decision_json,
+                        decision_sha256
+                    ) VALUES (1, ?, ?)
+                    """,
+                    (decision_json, decision_sha256),
+                )
+            elif (
+                self._required_text(decision_row, "decision_json") != decision_json
+                or self._required_text(decision_row, "decision_sha256") != decision_sha256
+            ):
+                raise StoreInvariantError("analysis decision is already bound to another result")
+
+            finalization = AnalysisFinalization(
+                analysis_manifest_sha256=manifest_sha256,
+                evaluation_result_sha256=result.result_sha256,
+                decision_sha256=decision_sha256,
+                comparison_result_sha256s=comparison_hashes,
+                guardrail_result_sha256s=guardrail_hashes,
+                comparison_count=len(comparison_hashes),
+                guardrail_count=len(guardrail_hashes),
+            )
+            finalization_json = canonical_json(finalization)
+            finalization_sha256 = canonical_sha256(finalization)
+            finalization_row = self._connection.execute(
+                """
+                SELECT finalization_json, finalization_sha256
+                FROM analysis_finalization
+                WHERE singleton_id = 1
+                """
+            ).fetchone()
+            if finalization_row is None:
+                self._connection.execute(
+                    """
+                    INSERT INTO analysis_finalization(
+                        singleton_id,
+                        finalization_json,
+                        finalization_sha256
+                    ) VALUES (1, ?, ?)
+                    """,
+                    (finalization_json, finalization_sha256),
+                )
+            else:
+                stored_finalization = self._decode_model(
+                    AnalysisFinalization,
+                    self._required_text(finalization_row, "finalization_json"),
+                    self._required_text(finalization_row, "finalization_sha256"),
+                    "analysis finalization",
+                )
+                if stored_finalization != finalization:
+                    raise StoreInvariantError(
+                        "analysis is already finalized with different closure evidence"
+                    )
+        return finalization
+
+    def get_analysis(self) -> StoredAnalysis | None:
+        """Load and cross-validate the finalized Phase 3 analysis, if present."""
+
+        self._ensure_open()
+        manifest_row = self._connection.execute(
+            """
+            SELECT manifest_json, manifest_sha256
+            FROM analysis_manifest
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        if manifest_row is None:
+            counts = tuple(
+                self._connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in (
+                    "comparison_results",
+                    "guardrail_results",
+                    "analysis_decision",
+                    "analysis_finalization",
+                )
+            )
+            if any(counts):
+                raise StoreCorruptionError("analysis evidence exists without a manifest")
+            return None
+
+        manifest = self._decode_model(
+            AnalysisManifest,
+            self._required_text(manifest_row, "manifest_json"),
+            self._required_text(manifest_row, "manifest_sha256"),
+            "analysis manifest",
+        )
+        comparison_rows = self._connection.execute(
+            """
+            SELECT comparison_id, result_json, result_sha256
+            FROM comparison_results
+            ORDER BY comparison_id
+            """
+        ).fetchall()
+        comparisons = tuple(
+            self._decode_analysis_member(
+                PairwiseComparisonResult,
+                row,
+                id_column="comparison_id",
+                label="comparison result",
+            )
+            for row in comparison_rows
+        )
+        guardrail_rows = self._connection.execute(
+            """
+            SELECT guardrail_id, result_json, result_sha256
+            FROM guardrail_results
+            ORDER BY guardrail_id
+            """
+        ).fetchall()
+        guardrails = tuple(
+            self._decode_analysis_member(
+                GuardrailResult,
+                row,
+                id_column="guardrail_id",
+                label="guardrail result",
+            )
+            for row in guardrail_rows
+        )
+        decision_row = self._connection.execute(
+            """
+            SELECT decision_json, decision_sha256
+            FROM analysis_decision
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        finalization_row = self._connection.execute(
+            """
+            SELECT finalization_json, finalization_sha256
+            FROM analysis_finalization
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        if decision_row is None or finalization_row is None:
+            raise StoreCorruptionError("analysis manifest is not atomically finalized")
+        result = self._decode_model(
+            Phase3EvaluationResult,
+            self._required_text(decision_row, "decision_json"),
+            self._required_text(decision_row, "decision_sha256"),
+            "analysis decision",
+        )
+        finalization = self._decode_model(
+            AnalysisFinalization,
+            self._required_text(finalization_row, "finalization_json"),
+            self._required_text(finalization_row, "finalization_sha256"),
+            "analysis finalization",
+        )
+        self._validate_analysis_binding(manifest, result, stored=True)
+        expected_comparison_hashes = tuple(
+            sorted(canonical_sha256(comparison) for comparison in result.comparisons)
+        )
+        expected_guardrails = tuple(result.global_guardrails) + tuple(
+            guardrail for comparison in result.comparisons for guardrail in comparison.guardrails
+        )
+        expected_guardrail_hashes = tuple(
+            sorted(canonical_sha256(guardrail) for guardrail in expected_guardrails)
+        )
+        actual_comparison_hashes = tuple(
+            sorted(canonical_sha256(comparison) for comparison in comparisons)
+        )
+        actual_guardrail_hashes = tuple(
+            sorted(canonical_sha256(guardrail) for guardrail in guardrails)
+        )
+        expected_finalization = AnalysisFinalization(
+            analysis_manifest_sha256=canonical_sha256(manifest),
+            evaluation_result_sha256=result.result_sha256,
+            decision_sha256=canonical_sha256(result),
+            comparison_result_sha256s=expected_comparison_hashes,
+            guardrail_result_sha256s=expected_guardrail_hashes,
+            comparison_count=len(expected_comparison_hashes),
+            guardrail_count=len(expected_guardrail_hashes),
+        )
+        if (
+            actual_comparison_hashes != expected_comparison_hashes
+            or actual_guardrail_hashes != expected_guardrail_hashes
+            or finalization != expected_finalization
+        ):
+            raise StoreCorruptionError(
+                "persisted analysis members do not match the finalized decision"
+            )
+        return StoredAnalysis(
+            manifest=manifest,
+            result=result,
+            comparisons=tuple(result.comparisons),
+            guardrails=expected_guardrails,
+            finalization=finalization,
+        )
+
     def prepare_turn(
         self,
         request: GenerationRequest,
         history: HistoryBinding | None = None,
+        input_evidence: TurnInputEvidence | None = None,
     ) -> StoredTurn:
         """Persist a logical request before dispatch, idempotently if identical."""
 
@@ -282,11 +589,15 @@ class SQLiteRunStore:
             raise TypeError("request must be a GenerationRequest")
         if history is not None and not isinstance(history, HistoryBinding):
             raise TypeError("history must be a HistoryBinding or None")
+        if input_evidence is not None and not isinstance(input_evidence, TurnInputEvidence):
+            raise TypeError("input_evidence must be a TurnInputEvidence or None")
         condition = request.condition
         condition_json = canonical_json(condition)
         request_json = canonical_json(request)
         condition_id = condition.condition_id
         request_sha256 = canonical_sha256(request)
+        if input_evidence is not None and input_evidence.condition_id != condition_id:
+            raise ValueError("turn input evidence targets another condition")
         try:
             with self._transaction():
                 manifest = self._require_manifest()
@@ -306,6 +617,8 @@ class SQLiteRunStore:
                         raise DuplicateLogicalRequestError(
                             "condition is already bound to different request or history data"
                         )
+                    if input_evidence is not None:
+                        self._bind_turn_input(input_evidence)
                     return existing
                 if finalization is not None:
                     raise StoreInvariantError("cannot prepare a new turn after run finalization")
@@ -350,11 +663,49 @@ class SQLiteRunStore:
                         TurnState.PREPARED.value,
                     ),
                 )
+                if input_evidence is not None:
+                    self._bind_turn_input(input_evidence)
                 return self._read_turn(condition_id)
         except sqlite3.IntegrityError as exc:
             raise DuplicateLogicalRequestError(
                 "unique logical request or condition constraint rejected the turn"
             ) from exc
+
+    def get_turn_input(self, condition_id: str) -> TurnInputEvidence | None:
+        """Load and hash-validate complete prompt-side evidence for one turn."""
+
+        self._ensure_open()
+        row = self._connection.execute(
+            "SELECT input_json, input_sha256 FROM turn_inputs WHERE condition_id = ?",
+            (condition_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        evidence = self._decode_model(
+            TurnInputEvidence,
+            self._required_text(row, "input_json"),
+            self._required_text(row, "input_sha256"),
+            "turn input evidence",
+        )
+        if evidence.condition_id != condition_id:
+            raise StoreCorruptionError("turn input evidence targets another condition")
+        return evidence
+
+    def list_turn_inputs(self) -> tuple[TurnInputEvidence, ...]:
+        """Return every validated prompt-side evidence record in condition order."""
+
+        self._ensure_open()
+        rows = self._connection.execute(
+            "SELECT condition_id FROM turn_inputs ORDER BY condition_id"
+        ).fetchall()
+        evidence: list[TurnInputEvidence] = []
+        for row in rows:
+            condition_id = self._required_text(row, "condition_id")
+            record = self.get_turn_input(condition_id)
+            if record is None:
+                raise StoreCorruptionError("turn input evidence disappeared during read")
+            evidence.append(record)
+        return tuple(evidence)
 
     def begin_dispatch(self, condition_id: str) -> StoredTurn:
         """Atomically mark a prepared request as entering its sole dispatch."""
@@ -662,7 +1013,9 @@ class SQLiteRunStore:
             raise SchemaVersionError("database schema version changed unexpectedly")
         self.get_manifest()
         self.list_turns()
+        self.list_turn_inputs()
         self.get_finalization()
+        self.get_analysis()
 
     def compact(self) -> None:
         """Checkpoint and compact the single SQLite artifact in place."""
@@ -768,6 +1121,142 @@ class SQLiteRunStore:
         if manifest is None:
             raise StoreInvariantError("a run manifest must be bound before preparing turns")
         return manifest
+
+    def _persist_analysis_member(
+        self,
+        *,
+        table: str,
+        id_column: str,
+        member_id: str,
+        result_json: str,
+    ) -> None:
+        if not self._connection.in_transaction:
+            raise StoreInvariantError("analysis members must be persisted transactionally")
+        if (table, id_column) not in {
+            ("comparison_results", "comparison_id"),
+            ("guardrail_results", "guardrail_id"),
+        }:
+            raise StoreInvariantError("unsupported analysis member table")
+        result_sha256 = canonical_sha256(json.loads(result_json))
+        row = self._connection.execute(
+            f"SELECT result_json, result_sha256 FROM {table} WHERE {id_column} = ?",
+            (member_id,),
+        ).fetchone()
+        if row is None:
+            self._connection.execute(
+                f"""
+                INSERT INTO {table}({id_column}, result_json, result_sha256)
+                VALUES (?, ?, ?)
+                """,
+                (member_id, result_json, result_sha256),
+            )
+            return
+        if (
+            self._required_text(row, "result_json") != result_json
+            or self._required_text(row, "result_sha256") != result_sha256
+        ):
+            raise StoreInvariantError("analysis member identifier is bound to other evidence")
+
+    def _decode_analysis_member(
+        self,
+        model_type: type[ModelT],
+        row: sqlite3.Row,
+        *,
+        id_column: str,
+        label: str,
+    ) -> ModelT:
+        member_id = self._required_text(row, id_column)
+        result_sha256 = self._required_text(row, "result_sha256")
+        if member_id != result_sha256:
+            raise StoreCorruptionError(f"{label} identifier does not match its digest")
+        return self._decode_model(
+            model_type,
+            self._required_text(row, "result_json"),
+            result_sha256,
+            label,
+        )
+
+    def _validate_analysis_binding(
+        self,
+        manifest: AnalysisManifest,
+        result: Phase3EvaluationResult,
+        *,
+        stored: bool,
+    ) -> None:
+        run_manifest = self._require_manifest()
+        run_finalization = self.get_finalization()
+
+        def fail(message: str) -> None:
+            if stored:
+                raise StoreCorruptionError(message)
+            raise StoreInvariantError(message)
+
+        if run_finalization is None:
+            fail("Phase 3 analysis requires a finalized run")
+            return
+        if (
+            run_manifest.database_schema_version != CURRENT_SCHEMA_VERSION
+            or run_manifest.decision_rule_version != "phase3-baseline-evaluator-v1"
+        ):
+            fail("Phase 3 analysis requires a schema-v2 Phase 3 run manifest")
+        if manifest.run_manifest_sha256 != canonical_sha256(run_manifest):
+            fail("analysis manifest does not match the run manifest")
+        if manifest.run_finalization_sha256 != canonical_sha256(run_finalization):
+            fail("analysis manifest does not match the run finalization")
+        if manifest.scientific_result_sha256 != run_finalization.scientific_result_sha256:
+            fail("analysis manifest does not match the finalized scientific result")
+        if manifest.dataset_sha256 != run_manifest.dataset_hash:
+            fail("analysis manifest does not match the run dataset")
+        if manifest.evaluation_input_sha256 != result.input_sha256:
+            fail("analysis manifest does not match the evaluator input")
+        try:
+            expected_contract_sha256 = phase3_analysis_contract_sha256(
+                experiment_plan_sha256=manifest.experiment_plan_sha256,
+                evaluation_spec=manifest.evaluation_spec,
+                evaluation_spec_sha256=manifest.evaluation_spec_sha256,
+                static_selection_record=manifest.static_selection_record,
+                static_selection_result_sha256=manifest.static_selection_result_sha256,
+                evaluation_design=manifest.evaluation_design,
+                dataset_sha256=manifest.dataset_sha256,
+                dataset_purpose=manifest.dataset_purpose,
+                dataset_seal_sha256=manifest.dataset_seal_sha256,
+            )
+        except ValueError as exc:
+            fail(f"analysis contract evidence is internally inconsistent: {exc}")
+            return
+        if run_manifest.phase3_analysis_contract_sha256 != expected_contract_sha256:
+            fail("analysis evidence does not match the pre-execution Phase 3 contract")
+
+    def _bind_turn_input(self, evidence: TurnInputEvidence) -> None:
+        """Insert one immutable input record inside the caller's transaction."""
+
+        if not self._connection.in_transaction:
+            raise StoreInvariantError("turn input evidence must be bound transactionally")
+        evidence_json = canonical_json(evidence)
+        evidence_sha256 = canonical_sha256(evidence)
+        row = self._connection.execute(
+            "SELECT input_json, input_sha256 FROM turn_inputs WHERE condition_id = ?",
+            (evidence.condition_id,),
+        ).fetchone()
+        if row is None:
+            finalized = self._connection.execute(
+                "SELECT 1 FROM run_finalization WHERE singleton_id = 1"
+            ).fetchone()
+            if finalized is not None:
+                raise StoreInvariantError("cannot bind turn input after run finalization")
+            self._connection.execute(
+                """
+                INSERT INTO turn_inputs(condition_id, input_json, input_sha256)
+                VALUES (?, ?, ?)
+                """,
+                (evidence.condition_id, evidence_json, evidence_sha256),
+            )
+            return
+        if (
+            self._required_text(row, "input_json") != evidence_json
+            or self._required_text(row, "input_sha256") != evidence_sha256
+        ):
+            raise StoreInvariantError("turn is already bound to different input evidence")
 
     def _validate_finalization_against_store(
         self,

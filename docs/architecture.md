@@ -2,13 +2,16 @@
 
 ## Status and purpose
 
-This living contract describes the NeuraLLM 2.0 architecture through the Phase
-2 experiment kernel. The current implementation includes strict configuration
-and datasets, deterministic planning, bounded action application, a fixed kernel
-policy, deterministic response metrics, fake and llama.cpp provider adapters,
-transactional SQLite execution and resume, compact exports, and the explicit
-CLI. Their existence is not evidence of live llama.cpp validity, comparator
-fairness, neural activity, or scientific efficacy.
+This living contract describes the NeuraLLM 2.0 architecture through Phase 3.
+The source tree reports version `2.0.0a3`. The current implementation preserves
+the Phase 2 experiment kernel and adds typed `best_static`, `random_matched`,
+and `heuristic_adaptive` policies; development-only static selection; typed
+dataset purposes and a canonical evaluation seal; exact matched-unit coverage;
+paired statistics and guardrails; schema-v2 durable analysis; and compact Phase
+3 reports. These are offline engineering and statistical-behavior capabilities.
+They are not evidence of live llama.cpp validity, neural activity, neural
+efficacy, or persistent-state attribution, and they never populate
+`scientific_decision`.
 
 NeuraLLM asks one falsifiable question:
 
@@ -35,18 +38,20 @@ Production code is organized by domain, not by implementation phase.
 | --- | --- | --- |
 | `domain` | Immutable models, identifiers, canonical serialization, and hashes | Provider clients, policy logic, storage side effects |
 | `providers` | The common generation boundary, deterministic fake generation, and the strict llama.cpp adapter | Policy selection, metrics, retries, fallback routing |
-| `control` | Shared policy protocol, action bounds, baselines, and the composed neural controller | Provider construction, experiment scheduling, evaluation decisions |
+| `control` | Shared policy protocol, action bounds, and the implemented static, bounded-random, and heuristic baselines | Provider construction, experiment scheduling, evaluation decisions |
 | `metrics` | Deterministic validators and versioned output metrics | Controller state transitions or policy feedback routing |
 | `experiments` | Deterministic planning, matching, scheduling, execution, and resume orchestration | Policy-specific mode dispatch or statistical claims |
-| `evaluation` | Sequence-level scoring, guardrails, paired statistics, and scientific decisions | Generation or mutation of source run evidence |
-| `storage` | Transactional run persistence, manifests, integrity checks, and crash-safe resume | Scientific policy or retry decisions |
+| `evaluation` | Exact coverage, sequence-level aggregation, guardrails, paired statistics, and Phase 3 verdicts | Generation, mutation of source run evidence, or a Phase 5 scientific decision |
+| `storage` | Transactional run and analysis persistence, manifests, integrity checks, and crash-safe resume | Scientific policy or retry decisions |
 | `reporting` | Compact, reproducible views derived from the canonical run store | Recomputing or changing scientific truth |
 | `cli` | Explicit composition root and command surface | Import-time clients, hidden defaults, or alternate scientific paths |
 
 Dependencies point toward typed domain contracts. The runner composes policies,
 providers, metrics, and storage; those components do not reach back into the CLI
-or choose one another through mode strings. Production package paths and runtime
-identifiers must not contain chronological phase names.
+or choose one another through mode strings. Provider and policy runtime
+identifiers are domain-based; the explicitly scoped Phase 3 evaluator and
+decision-rule versions retain Phase 3 in their names so their limited claim
+scope cannot be mistaken for a final scientific decision.
 
 ## Shared policy boundary
 
@@ -65,13 +70,26 @@ class ControlPolicy(Protocol):
     ) -> tuple[ControllerAction, PolicyState, PolicyTrace]: ...
 ```
 
-The runner may select and construct a policy, but it must not branch on policy
-mode strings during execution. Static, bounded-random, heuristic-adaptive,
-persistent-neural, and matched-history reset arms all use this interface and the
-same `ControllerAction` type. Policy state is explicit and passed through the
-interface; global mutable controller state is prohibited.
+The composition root maps the strict discriminated `PolicySpec` union to a
+runtime before execution; the runner does not branch on policy mode strings in
+the turn loop. The implemented Phase 3 variants are:
 
-The neural policy is composed from separable parts:
+- `BestStaticPolicySpec` / `best_static`: stateless, no history access, and
+  zero deltas from the development-selected base profile.
+- `RandomMatchedPolicySpec` / `random_matched`: no history access, an exact
+  zero action at turn zero, and deterministic SHA-256-derived draws within all
+  four shared action bounds on later turns.
+- `HeuristicAdaptivePolicySpec` / `heuristic_adaptive`: explicit typed state,
+  an exact zero action at turn zero, access only to its own previous response
+  metrics, declared repetition/adherence/length reactions, and clean-response
+  decay toward zero.
+
+Policy state is explicit and passed through the common interface; global mutable
+controller state is prohibited. Policy-specific traces are nested inside one
+common applied-action trace in schema-v2 runs.
+
+The following composition is reserved for the Phase 4 neural policy and is not
+implemented or evaluated in Phase 3:
 
 ```text
 ControllerObservation
@@ -83,11 +101,11 @@ ControllerObservation
     -> ControllerAction
 ```
 
-The initial substrate will be a small deterministic dynamical system with
-interpretable, bounded state and explicit equations. It is not a learned opaque
-network. This separation permits a future substrate adapter without changing
-the experiment runner or evaluation system, but live CL1 integration is outside
-the initial rebuild.
+Any future substrate must be a small deterministic dynamical system with
+interpretable, bounded state and explicit equations rather than a learned opaque
+network. This reserved boundary permits a future adapter without changing the
+experiment runner or evaluator. It does not imply that a neural substrate, a
+state-reset comparator, or live CL1 integration exists in the current source.
 
 ## Shared provider boundary
 
@@ -104,8 +122,11 @@ has been dispatched.
 
 The deterministic `FakeProvider` is an explicitly selected testing
 implementation, never a fallback for a failed live provider.
-For identical canonical inputs it must return identical outputs and it must make
-no network call. This gives domain, policy, identifier, and CLI contracts a
+Its response bytes hash only provider-visible prompt, decoding parameters,
+provider identity, and provider configuration. Policy IDs, controller seeds,
+and other orchestration-only condition metadata cannot affect the response;
+the full canonical request hash is still retained in generation metadata. It
+makes no network call, giving domain, policy, identifier, and CLI contracts a
 complete zero-network test seam.
 
 The Phase 2 generation adapter is a strict llama.cpp completion provider. Its
@@ -131,13 +152,26 @@ Core boundaries use strict immutable models rather than untyped dictionaries.
 | `ControllerObservation` | Only the current turn index, prompt family, current prompt features, nullable prior-response metrics, and an explicit history-presence flag |
 | `ResponseMetrics` | Output measures whose entries carry value, availability, metric version, and input hash |
 | `ExperimentCondition` | Unique binding of experiment, dataset, prompt sequence, turn, policy, model seed, controller seed, provider identity, and base decoding profile |
-| `RunManifest` | Source, configuration, data, provider, policy, metric, seed, bounds, decision-rule, and database-schema identities |
+| `RunManifest` | Source, configuration, data, provider, policy, metric, seed, bounds, decision-rule, database-schema, and pre-execution Phase 3 analysis-contract identities |
+| `DatasetSeal` | Evaluation purpose, dataset ID/version, dataset SHA-256, and canonical seal identity |
+| `StaticSelectionRecord` | Development-only candidate grid, fixed `max_tokens`, canonical matched-unit keys, aligned score vectors, deterministic winner, and selection-result hash |
+| `EvaluationSpec` | Focal/comparator roles, aggregation and statistical methods, seeds, thresholds, and guardrail limits |
+| `AnalysisManifest` | Hash-bound connection between a finalized run, plan, evaluator input, static selection, dataset purpose, and seal |
 
 Canonical scientific serialization is UTF-8 JSON with sorted keys, compact
 separators, and non-finite values rejected (`allow_nan = false`). Hashes are
 lowercase SHA-256. Deterministic condition identifiers are derived from the
 complete condition identity, not filesystem paths, timestamps, process order,
 or incidental machine state.
+
+Dataset purpose is a typed boundary: `development` is accepted for static
+selection but rejected by the statistical evaluator; `evaluation` requires a
+matching seal; and `synthetic` is explicitly unsealed. The checked-in Phase 3
+evaluation fixture binds dataset SHA-256
+`de4c415d71cc3ed0177b189880fa9da040464f41ab14b192bab01cb4eed09199` and seal
+SHA-256 `89e794e8c80094c15ba9be801306f9ca8090fbd45ab9462b92c172a4a3b65847`.
+Both Phase 3 experiment fixtures use `FakeProvider`; the seal does not turn an
+offline fixture into a confirmatory or live-provider run.
 
 ## Strict causal observation surface
 
@@ -183,46 +217,57 @@ The intended logical order for one turn is:
    a later turn.
 
 Raw action, step-clamped action, final legal parameters, and saturation
-indicators remain distinct trace fields. Output behavior is the primary evidence;
-controller and neural trajectories are diagnostic mechanism evidence.
+indicators remain distinct trace fields. Output behavior is the primary
+evidence; controller activity is diagnostic mechanism evidence.
 
-The Phase 2 kernel implements this loop for the explicitly configured
-`kernel_fixed` policy with the fake or strict llama.cpp provider. It stores the
-applied action stages, response, metrics, state, and history commitments in one
-transactional SQLite run store. Fake-provider execution establishes the offline
-provider-to-artifact engineering path; it must not be described as live-provider
-validation or policy efficacy.
+Phase 2 implements this loop for the explicitly configured `kernel_fixed`
+policy with the fake or strict llama.cpp provider. Phase 3 uses the same loop
+through a typed runtime factory for `best_static`, `random_matched`, and
+`heuristic_adaptive`, without policy-specific execution branches. Schema-v2
+runs additionally bind immutable prompt-side evidence needed to reconstruct
+evaluation inputs. Fake-provider execution establishes an offline
+provider-to-artifact and evaluator-validation path; it must not be described as
+live-provider validation or model efficacy.
 
-## Efficacy and attribution are different experiments
+## Baseline evaluation and future attribution are different experiments
 
-End-to-end efficacy gives each policy its own causal trajectory. Each policy
-generates its own response, observes metrics only from its own previous response,
-and carries only its own declared state. The efficacy policies are
-`best_static`, `random_matched`, `heuristic_adaptive`, and `neural_persistent`.
+The implemented Phase 3 baseline population is `best_static`,
+`random_matched`, and `heuristic_adaptive`. Each policy generates its own
+response and carries only its declared state. Only `heuristic_adaptive` may
+observe previous-response metrics, and those metrics come from its own committed
+trajectory. The checked-in Phase 3 specifications use
+`heuristic_adaptive` as the evaluator focal policy, `best_static` as the
+required serious comparator, and `random_matched` as a negative control. This
+validates baseline and evaluator behavior; it is not a neural efficacy
+experiment.
 
-Persistent-state attribution instead pairs `neural_persistent` with
-`neural_matched_history_state_reset`. The reset arm receives the exact committed
-previous-turn metric tuple from the focal persistent arm, preserves the real
-turn index and history-presence semantics, and resets substrate/controller state
-at the intervention boundary. It never inserts its own response metrics into the
-focal history. The reset arm is attribution-only and must not be reported as an
-independently operating efficacy baseline.
-
-These paths share current prompt, model seed, action decoder, provider, base
-parameters, and action bounds. At turn zero they must be byte-equivalent before
-persistent state can meaningfully differ. Later tests must prove that only the
-declared persistent state differs and that no comparator-history leakage exists.
+A future end-to-end efficacy population may add `neural_persistent` while
+preserving independent policy histories. Future persistent-state attribution
+would separately pair that focal policy with a matched-history state-reset arm.
+Neither neural arm exists in Phase 3, so no current artifact may report neural
+activity, neural benefit, or persistent-state attribution.
 
 ## Storage and artifact boundary
 
-Phase 2 uses one SQLite database as the canonical mutable run record. Migrations,
-integrity verification, transactional checkpoints, history commitments, and
-crash-safe resumption are implemented without an alternate ad hoc JSON store.
-Unique constraints prevent duplicate logical requests. A request moves
-through prepared, dispatching, response-persisted, metrics-computed, and
-committed work within explicit transactions. Committed turns are never
-regenerated. A dispatched request with uncertain outcome fails closed unless the
-provider offers a verified idempotency mechanism; it is never silently retried.
+One SQLite database is the canonical mutable record. The Phase 2 transaction,
+resume, and finalization behavior remains supported. Schema version 2 adds
+`turn_inputs`, `analysis_manifest`, `comparison_results`,
+`guardrail_results`, `analysis_decision`, and `analysis_finalization`.
+Prompt-side records are immutable once the run is finalized; comparison and
+guardrail rows are immutable once analysis is finalized. The analysis manifest
+binds the closed run, experiment plan, evaluator spec, development-only static
+selection, dataset identity and seal when required, and evaluator input hash.
+The run manifest freezes a digest of that Phase 3 analysis contract before the
+first provider call. Analysis persistence and reads recompute the digest, so a
+foreign plan, selection, evaluator design, purpose, dataset, or seal fails
+closed. Analysis members and their finalization are canonical-hash-validated,
+transactional, idempotent, and rechecked on read.
+
+Unique constraints prevent duplicate logical requests. A request moves through
+prepared, dispatching, response-persisted, metrics-computed, and committed work
+within explicit transactions. Committed turns are never regenerated. A
+dispatched request with uncertain outcome fails closed unless the provider
+offers a verified idempotency mechanism; it is never silently retried.
 
 Closed runs export only:
 
@@ -235,30 +280,42 @@ decision.json
 report.md
 ```
 
-Optional plots share one `plots/` directory. Per-turn directory forests are
-prohibited. `scientific_identity_sha256` covers canonical scientific inputs and
-excludes incidental timestamps and machine-local output paths.
+The five non-database files are deterministic derived views. Phase 2 retains a
+header-only `comparisons.csv` and an engineering-only null decision. Finalized
+Phase 3 analysis emits deterministic comparison rows, a Phase 3 verdict and
+analysis identities in `decision.json`, and explicit evaluator, guardrail, and
+limitation sections in `report.md`. In both phases `scientific_decision` is
+null. The current exporter rejects every additional file, including plot
+directories and per-turn request/response forests. `scientific_identity_sha256`
+covers canonical scientific inputs and excludes incidental timestamps and
+machine-local output paths.
 
 ## Evaluation boundary
 
-The primary endpoint is preregistered, output-based
-`guardrail_clean_task_score`, aggregated at the prompt-sequence by model-seed
-unit rather than treating turns as independent samples. Guardrails gate the
-result; they are not hidden inside a weighted score. Internal controller drift
-cannot establish efficacy.
+The implemented Phase 3 primary metric is output-based `task_score`. Turns are
+first averaged within a controller seed, then controller-seed means are averaged
+at the `prompt sequence x model seed` unit. Only those unit values enter paired
+statistics. The evaluator requires the exact Cartesian grid of policies, turns,
+model seeds, and controller seeds before aggregation or statistical calls;
+missing, unexpected, duplicate, dataset-drifted, provider-drifted, out-of-bounds,
+turn-zero-history-invalid, or required-metric-missing evidence returns the Phase
+3 verdict `invalid` with zero statistical calls.
 
-Every confirmatory run terminates in exactly one state:
+For valid evidence, focal-minus-comparator differences feed deterministic seeded
+paired-bootstrap percentile intervals and two-sided paired sign-flip tests.
+Sign patterns are enumerated exactly for at most 20 units when the configured
+resample budget permits; otherwise a deterministic Monte Carlo stream with an
+add-one correction is used. Holm correction applies to the serious-comparator
+family. Adherence non-regression, response-length confounding, action
+saturation, and behavioral aliasing remain explicit guardrails rather than
+components of a weighted score.
 
-- `VALIDATED_POSITIVE`
-- `VALIDATED_NEGATIVE`
-- `INCONCLUSIVE`
-- `INVALID_RUN`
-
-A clean negative is preserved. An invalid run is not relabeled inconclusive,
-and uncertainty is not relabeled negative. Decision execution and statistical
-testing are later-phase responsibilities. Phase 2 exports a null scientific
-decision with an engineering-only claim scope rather than simulating a later
-phase result.
+Phase 3 results use only `superior`, `inferior`, `equivalent`,
+`inconclusive`, or `invalid` with claim scope
+`phase-3-statistical-behavior-only`. These validate the evaluator skeleton and
+baseline behavior. They are not the future Phase 5 states
+`VALIDATED_POSITIVE`, `VALIDATED_NEGATIVE`, `INCONCLUSIVE`, or
+`INVALID_RUN`; `scientific_decision` remains null.
 
 ## Five phase boundaries
 
@@ -269,7 +326,7 @@ release gates; they are not runtime architecture.
 | --- | --- | --- |
 | 1. Clean foundation and contracts | Typed domain and protocol surfaces, canonical identities, fake provider, minimal CLI, zero-network tests, architecture documents | SQLite execution, resume, llama.cpp transport, scientific policies or results |
 | 2. Experiment kernel, storage, metrics, and llama.cpp | Complete provider-to-compact-artifact path, deterministic validators, strict llama.cpp, transaction/resume behavior | Comparator efficacy or neural claims |
-| 3. Baselines and statistical evaluator | Serious static, random, and heuristic comparators; sealed-data discipline; paired evaluator and decision skeleton | Neural activity or benefit |
+| 3. Baselines and statistical evaluator (current) | Typed static, random, and heuristic comparators; development-only selection; sealed-data identity; exact matching; paired evaluator, guardrails, and durable decision skeleton | Live-provider validity, neural activity or benefit, persistent-state attribution, or a final scientific decision |
 | 4. Simulated neural controller and attribution | One transparent persistent neural policy and causally clean matched-history reset control | Model-backed scientific conclusion |
 | 5. Model-backed evaluation and closeout | Smoke, development pilot, frozen confirmatory run, and one declared final decision | Opportunistic retuning after confirmatory execution |
 

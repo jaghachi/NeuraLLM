@@ -61,7 +61,7 @@ def test_closed_run_exports_exact_compact_deterministic_artifact_set(tmp_path: P
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
     assert rows[0]["policy_id"] == "test-policy"
-    assert rows[0]["response_text"].startswith("fake-response:")
+    assert rows[0]["response_text"].startswith("fake-response-v2:")
 
     with (run_directory / "comparisons.csv").open(encoding="utf-8", newline="") as handle:
         assert list(csv.DictReader(handle)) == []

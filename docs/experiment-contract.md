@@ -3,13 +3,19 @@
 ## Contract status
 
 This document defines the scientific invariants that implementation and
-preregistration must preserve. The current Phase 2 implementation realizes the
-deterministic experiment kernel: strict development inputs, planning, a fixed
-kernel policy, bounded action application, deterministic response metrics,
-fake and llama.cpp provider boundaries, transactional SQLite execution/resume,
-and compact derived artifacts. It does not claim live llama.cpp validity,
-serious comparator evaluation, neural behavior, confirmatory statistics, or a
-model-backed scientific result.
+preregistration must preserve. The source tree reports version `2.0.0a3` and
+implements Phase 3. It preserves the Phase 2 deterministic experiment kernel and
+adds typed static, bounded-random, and heuristic-adaptive policies;
+development-only frozen static selection; typed development, evaluation, and
+synthetic dataset purposes; a canonical evaluation seal; exact matched coverage;
+seeded paired statistics and explicit guardrails; durable schema-v2 analysis;
+and compact Phase 3 comparisons, decision, and report views.
+
+The checked-in Phase 3 configurations use the deterministic fake provider and
+exercise the baseline evaluator offline. They do not establish live llama.cpp
+validity, a neural controller, neural efficacy, persistent-state attribution, a
+confirmatory model result, or a final scientific outcome. The Phase 3
+`scientific_decision` field is always null.
 
 The experiment is valid even if the neural controller has no benefit. A run may
 support only one final decision state, and engineering completion does not
@@ -32,9 +38,53 @@ attribution by itself.
 
 ## Analysis populations
 
-### End-to-end efficacy
+### Implemented Phase 3 baseline evaluator
 
-The efficacy population contains:
+The current population is:
+
+```text
+best_static
+random_matched
+heuristic_adaptive
+```
+
+`best_static` is the serious comparator, `random_matched` is a negative
+control, and the checked-in evaluator specifications use
+`heuristic_adaptive` as the focal policy. Every arm is created from a strict
+typed specification before execution. `best_static` and `random_matched`
+declare no history access; `heuristic_adaptive` may observe only its own
+previous committed response metrics. All three produce exact zero actions at
+turn zero.
+
+Static selection accepts only a `development` dataset. Candidate profiles must
+have equal development-unit coverage; the winner is the highest mean
+sequence-task-score candidate with lexical profile ID as the deterministic tie
+break. The complete candidate grid, development dataset hash, winner, rule, and
+selection-result hash are frozen before an evaluation or synthetic run is
+planned. The winning profile must exactly equal the experiment's base decoding
+profile.
+
+The Phase 3 evaluator rejects development-purpose data. Evaluation-purpose data
+requires a matching external seal; synthetic-purpose data must be unsealed. The
+checked-in offline fixtures are frozen as:
+
+| Purpose | Dataset | Canonical identity |
+| --- | --- | --- |
+| Development | `datasets/development/phase3-baseline-development-v1.yaml` (6 sequences, 24 prompt turns) | `a6c41a046cb84bc9a806866a7393196784eb769118f74cbe4d44d0f3e247df97` |
+| Evaluation | `datasets/evaluation/phase3-baseline-evaluation-v1.yaml` (8 sequences, 32 prompt turns) | Dataset `de4c415d71cc3ed0177b189880fa9da040464f41ab14b192bab01cb4eed09199`; seal `89e794e8c80094c15ba9be801306f9ca8090fbd45ab9462b92c172a4a3b65847` |
+| Synthetic | `datasets/synthetic/phase3-evaluator-validation-v1.yaml` (4 sequences, 16 prompt turns) | `192d7f5f092eb628cbbc25316aefcbbabd89e4e18dd5180be9e72e5ad426ffbf` |
+
+The frozen development selection compares three profiles over the same 12
+explicitly keyed `prompt sequence x model seed` units, holds `max_tokens` fixed
+at 192, selects `static-balanced-v1`, and has selection-result SHA-256
+`19be248a50cf6504011168d1e79e3e3cd24d1027017a6cbec443b9019a0bf301`.
+
+This is an offline fixture identity, not proof that a confirmatory dataset was
+evaluated with a live model.
+
+### Future end-to-end efficacy
+
+The future efficacy population contains:
 
 ```text
 best_static
@@ -43,28 +93,28 @@ heuristic_adaptive
 neural_persistent
 ```
 
-Each policy operates independently:
+When implemented, each policy must operate independently:
 
 - it produces its own response;
 - it observes metrics only from its own previous response;
 - it carries only its own explicitly declared state; and
 - its next action cannot depend on another policy's output or state.
 
-The required serious primary comparators are `best_static` and
-`heuristic_adaptive`. `random_matched` is a negative-control and structured-action
-sanity comparison. Static-profile selection uses development data only and is
-frozen before the sealed evaluation dataset is opened.
+The required serious primary comparators would be `best_static` and
+`heuristic_adaptive`. `random_matched` remains a negative-control and
+structured-action sanity comparison. `neural_persistent` is not implemented or
+evaluated in Phase 3.
 
-### Persistent-state attribution
+### Future persistent-state attribution
 
-The attribution population pairs:
+The future attribution population would pair:
 
 ```text
 neural_persistent
 neural_matched_history_state_reset
 ```
 
-For each attribution turn, the reset arm:
+For each attribution turn, the reset arm would:
 
 - receives the exact committed previous-turn `ResponseMetrics` tuple from the
   paired focal `neural_persistent` condition;
@@ -83,6 +133,7 @@ replace any required efficacy comparator.
 At turn zero the paired attribution arms must be byte-equivalent before the
 state-reset intervention can have meaning. At later turns, focal-history hashes
 must match and tests must establish that only declared persistent state differs.
+No current Phase 3 result makes this attribution claim.
 
 ## Experimental unit and condition identity
 
@@ -93,7 +144,11 @@ prompt sequence x model seed
 ```
 
 Turns within one sequence are correlated observations and must not be treated as
-independent samples.
+independent samples. The implemented aggregation is
+`mean-controller-seed-then-turn-v1`: metrics are averaged across turns within
+each controller seed, then the controller-seed means are averaged within each
+`prompt sequence x model seed` unit. Turns and controller seeds are nested
+replicates and never increase the paired sample size.
 
 Every `ExperimentCondition` uniquely binds:
 
@@ -111,9 +166,11 @@ base_decoding_profile_id
 
 The logical request identity derives from this complete condition and the
 validated request inputs. Execution order, timestamp, host path, process ID, and
-retry count are not scientific identity fields. Missing, duplicate, or mismatched
-conditions invalidate the affected confirmatory run rather than being silently
-repaired after execution.
+retry count are not scientific identity fields. Before statistics, the evaluator
+materializes and compares the exact Cartesian grid of prompt-sequence turns,
+policies, model seeds, and controller seeds. Missing, unexpected, duplicate,
+dataset-mismatched, or provider-mismatched evidence yields the Phase 3 verdict
+`invalid` with zero statistical calls; it is never silently repaired.
 
 ## Causal timing and history
 
@@ -146,9 +203,10 @@ as such in its trace.
 For turn `t > 0`, the observation may contain only metrics from a valid,
 committed response allowed by the selected analysis design:
 
-- the same policy's turn `t - 1` response for independent efficacy; or
+- the same policy's turn `t - 1` response for the implemented baseline paths
+  and future independent efficacy; or
 - the paired focal persistent arm's exact committed turn `t - 1` metric tuple
-  for matched-history attribution.
+  for future matched-history attribution.
 
 The current response can affect only a future action. Stale, uncommitted,
 wrong-policy, wrong-turn, wrong-sequence, or hash-mismatched history fails closed.
@@ -204,13 +262,28 @@ inputs must produce the same conditions and identifiers regardless of host or
 iteration order.
 
 The deterministic `FakeProvider` returns identical validated responses for
-identical canonical requests with zero network activity. Phase 2 implements the
-complete planner, ordered schedule, dry-run and artifact identities, runner,
-deterministic metric path, and compact artifact publication. `validate`, `plan`,
-and `run --dry-run` construct the full schedule and identities without
-constructing any provider or making HTTP calls. Fake output can establish the
-offline provider-to-artifact engineering path; it cannot prove live llama.cpp
-validity or a scientific model result.
+identical provider-visible prompt, decoding, provider-identity, and provider-
+configuration inputs with zero network activity. Policy IDs, controller seeds,
+and other orchestration-only condition fields cannot affect its response bytes;
+the full canonical request hash remains retained as provenance metadata. Phase
+2 implements the complete planner, ordered schedule, dry-run and artifact identities, runner,
+deterministic metric path, and compact artifact publication. Phase 3 adds typed
+policy-runtime construction, matched-unit expectations, prompt-side evaluator
+evidence, closed-run analysis, and durable comparison evidence. `validate`,
+`plan`, and `run --dry-run` validate the development-selection record,
+dataset identity and seal when required, policy/evaluator specifications, and
+the full schedule without constructing any provider or making HTTP calls.
+
+The checked-in development, evaluation, and synthetic fixtures are intentionally
+offline. A provider-free scenario harness consumes the synthetic dataset's
+known-superior, known-inferior, identical/equivalent, and length-confound codes
+as four independent evaluator runs. Pure evaluator tests additionally prove
+incomplete coverage is invalid before any statistical function is called. The
+ordinary fake-provider workflow remains an engineering/replay check and does
+not claim to manufacture those known outcomes.
+Fake output can establish the provider-to-artifact and evaluator engineering
+paths. It cannot prove live llama.cpp validity, neural efficacy, persistent-state
+causality, or a scientific model result.
 
 ## Provider identity and execution
 
@@ -252,6 +325,15 @@ decision-rule version
 database schema version
 ```
 
+For Phase 3, the plan also binds the dataset purpose, canonical seal when
+required, `EvaluationSpec` and its hash, the keyed development-only
+`StaticSelectionRecord`, and exact matched-unit expectations. Before execution,
+`RunManifest.phase3_analysis_contract_sha256` freezes the plan, evaluator,
+selection, evaluation design, purpose, dataset, and seal identities. The
+schema-v2 `AnalysisManifest` repeats that evidence with the finalized run,
+scientific-result, and canonical evaluator-input hashes; persistence and reads
+recompute the contract digest and fail closed on any foreign evidence.
+
 Scientific records use canonical UTF-8 JSON, sorted keys, compact separators,
 finite values only, and lowercase SHA-256. `scientific_identity_sha256` covers
 canonical scientific inputs while excluding incidental timestamps and
@@ -292,32 +374,28 @@ input_hash
 Unavailable optional metrics remain explicitly unavailable; they are never
 silently imputed.
 
-The exact Phase 2 tokenization, formulas, validator behavior, versions, and
-availability rules are recorded in [the metric definitions](metrics.md).
+The exact response-level tokenization, formulas, validator behavior, versions,
+availability rules, and Phase 3 aggregation/statistical rules are recorded in
+[the metric definitions](metrics.md).
 
-The primary endpoint is:
+The implemented Phase 3 primary metric is `task_score`. Required evaluator
+inputs also include `instruction_adherence`, `response_length_tokens`,
+`repetition_ratio`, normalized action magnitude, action-bound compliance, and
+action saturation. These are aggregated at the prompt-sequence by model-seed
+unit. Guardrails gate the result rather than being blended into an opaque
+weighted score. Controller movement is diagnostic only.
 
-```text
-guardrail_clean_task_score
-```
+The future confirmatory endpoint `guardrail_clean_task_score` and
+mechanism-level recovery measures such as
+`post_stressor_task_score_change`,
+`post_stressor_repetition_change`, and
+`time_to_return_to_target_band` are not computed by Phase 3.
 
-It is output-based and aggregated at the prompt-sequence by model-seed unit.
-Guardrails gate the result rather than being blended into an opaque weighted
-score. Controller-state recovery, neural stability, action movement, and
-decoding trajectories are explanatory diagnostics.
-
-Mechanism-level output recovery includes:
-
-```text
-post_stressor_task_score_change
-post_stressor_repetition_change
-time_to_return_to_target_band
-```
-
-Required secondary measures include repetition, repeated 3-gram and 4-gram
+The stored response tuple still includes repetition, repeated 3-gram and 4-gram
 ratios, distinct 2-grams and 3-grams, late-window repetition, response length,
-and explicitly available or unavailable semantic similarity. Repetition gains
-receive no credit when explained primarily by shorter output.
+and explicitly unavailable semantic similarity. Phase 3 uses response length
+and repetition to reject an apparent repetition improvement that is explained
+by excessive output shortening.
 
 Required guardrails are:
 
@@ -333,29 +411,58 @@ behavioral_alias_detection
 metric_availability
 ```
 
-An optional LLM judge may be only a secondary evaluator. It uses a separate
-explicit identity, blinded policy labels, randomized response order, a fixed
-rubric, cached judgments, multiple orderings or judges, and reported
-disagreement. Its output is never visible to a judged policy and is never the
-sole primary acceptance criterion.
+No LLM judge is implemented or invoked in Phase 3. Any future optional judge
+would be secondary, use a separate explicit identity, remain invisible to the
+judged policy, and never become the sole primary acceptance criterion.
 
 ## Statistical comparison contract
 
-Primary comparisons are paired on prompt sequence and model seed. Resampling
-seeds are deterministic and recorded. The confirmatory evaluator uses paired
-bootstrap confidence intervals, paired permutation tests, and the preregistered
-multiple-comparison correction for required primary comparators.
+Phase 3 comparisons are focal-minus-comparator differences paired on prompt
+sequence and model seed. The `EvaluationSpec` records every resampling seed,
+resample count, confidence level, practical-effect threshold, equivalence
+margin, multiplicity method, and guardrail threshold.
 
-The neural policy must be compared against `best_static`,
-`heuristic_adaptive`, and `random_matched`. Positive validation requires the
-preregistered practical and statistical advantage over both serious efficacy
-comparators, complete coverage, all substantive guardrails, output-based
-recovery, and supporting persistent-state attribution. The random arm does not
-replace either serious comparator.
+For valid exact coverage, the evaluator computes:
 
-## Final decision states
+1. a seeded paired-bootstrap percentile interval over matched-unit differences;
+2. a two-sided paired sign-flip permutation test, exact for at most 20 units
+   when all sign patterns fit within the configured resample budget and
+   otherwise deterministic Monte Carlo with an add-one correction; and
+3. Holm-adjusted p-values over required serious comparators only.
 
-Every confirmatory experiment returns exactly one state:
+Negative controls receive the raw permutation result and do not enter the Holm
+family. A pair is `superior` only when its mean improvement meets the practical
+threshold, its bootstrap lower bound is positive, and its applicable p-value is
+at most alpha. The symmetric rule yields `inferior`; equivalence-margin or
+behavioral-alias evidence yields `equivalent`; otherwise the pair is
+`inconclusive`. Substantive adherence, response-length, or focal-saturation
+failure yields `inferior`. The overall verdict considers serious comparators:
+all superior yields `superior`, all equivalent yields `equivalent`, any
+inferior yields `inferior`, and all other valid combinations yield
+`inconclusive`.
+
+This is a Phase 3 decision skeleton. A future neural policy must still be
+compared against both serious efficacy comparators, and `random_matched` must
+not replace either one. No current Phase 3 comparison supports neural benefit
+or persistent-state attribution.
+
+## Phase 3 and final decision states
+
+The implemented Phase 3 verdict set is:
+
+| Verdict | Contract meaning |
+| --- | --- |
+| `superior` | The focal baseline clears the configured practical, interval, and p-value rules against every serious comparator without a substantive guardrail failure. |
+| `inferior` | A serious comparison is statistically/practically inferior or a substantive guardrail fails. |
+| `equivalent` | Every serious comparison is within the equivalence rule or behaviorally aliased. |
+| `inconclusive` | Evidence is valid but does not satisfy the superior, inferior, or all-equivalent rule. |
+| `invalid` | Exact coverage or an integrity guardrail fails before statistics. |
+
+These values are stored under claim scope
+`phase-3-statistical-behavior-only`. They never populate
+`scientific_decision`.
+
+A future Phase 5 confirmatory experiment must return exactly one state:
 
 | State | Contract meaning |
 | --- | --- |
@@ -370,10 +477,12 @@ Integrity failures produce `INVALID_RUN`; they are not uncertainty.
 
 ## Transaction and resume contract
 
-Phase 2 implements one SQLite database as the canonical mutable store, with
-unique constraints that prevent a logical request from being committed twice.
-Canonical reads are rehashed and integrity-checked rather than trusted as
-report text.
+One SQLite database remains the canonical mutable store, with unique constraints
+that prevent a logical request from being committed twice. The current physical
+schema is version 2 and migrates older stores; Phase 2 manifests declaring
+database schema version 1 remain supported. Version 2 adds immutable prompt-side
+turn inputs and durable Phase 3 analysis tables. Canonical reads are rehashed
+and integrity-checked rather than trusted as report text.
 
 For each logical generation, the transaction protocol is:
 
@@ -392,6 +501,20 @@ turns may resume safely. A dispatched turn lacking a valid persisted response
 fails closed unless the provider supports a verified idempotency mechanism.
 Uncertain generations are never silently retried.
 
+After a schema-v2 Phase 3 run is finalized, offline analysis:
+
+1. verifies the database, run manifest, run finalization, exact plan conditions,
+   and stored prompt-side evidence;
+2. reconstructs typed evaluator records only from committed store evidence;
+3. validates exact coverage and integrity before any statistical call;
+4. persists the analysis manifest, comparison rows, guardrail rows, Phase 3
+   decision skeleton, and analysis finalization atomically; and
+5. reads back and hash-validates the finalized analysis before export.
+
+Repeated persistence of identical evidence is idempotent. A different analysis
+after finalization, a missing finalized run, or hash-mismatched analysis evidence
+fails closed.
+
 The closed run has one compact artifact set:
 
 ```text
@@ -403,23 +526,35 @@ decision.json
 report.md
 ```
 
-Optional plots share one `plots/` directory. There is no per-turn request,
-response, hash, or validation directory forest. Reports are derived views and
-must not replace the canonical database or mutate the scientific decision.
+The current exporter rejects every additional file. There is no plot directory
+or per-turn request, response, hash, or validation forest. Reports are derived
+views and must not replace the canonical database or mutate the Phase 3 verdict
+or final scientific decision.
+
+For historical Phase 2 runs, `comparisons.csv` remains header-only and
+`decision.json` retains the `engineering_validation_only` claim scope. For a
+finalized Phase 3 analysis, `comparisons.csv` records the paired estimates,
+bootstrap bounds, sign-flip results, Holm values where applicable, alias flag,
+guardrail statuses, and pair verdict. `decision.json` records the Phase 3
+verdict and canonical analysis identities, and `report.md` separates baseline
+evaluator validation, controller activity, guardrails, end-to-end efficacy,
+persistent-state attribution, limitations, and the Phase 3 result.
+`scientific_decision` remains null.
 
 ## Phase gates and claim limits
 
 Phase 1 established the foundation contracts, deterministic identities,
-fake-provider behavior, and zero-network test seam. Phase 2 may establish the
+fake-provider behavior, and zero-network test seam. Phase 2 established the
 provider-to-artifact execution path, transactional resume, deterministic metric
 reconstruction, and strict provider contract behavior, but no live-provider
 claim without an explicit live run and no policy advantage under any
-circumstances. Phase 3 may establish fair baseline and statistical behavior but
-no neural result. Phase 4 may establish neural causal activity and clean
+circumstances. Phase 3 now establishes typed baseline and statistical-evaluator
+behavior under offline fake fixtures, frozen dataset identities, and synthetic
+known-outcome tests. It establishes no live-provider, neural, model-efficacy, or
+persistent-state result. Phase 4 may establish neural causal activity and clean
 persistent-state isolation but no model-backed benefit. Only the frozen Phase 5
 confirmatory experiment may produce the final scientific decision.
 
-The five phases execute in order. Production modules and runtime identifiers
-remain domain-based, no live model call occurs in default tests, sealed
-evaluation data is never used for development selection or tuning, and no
-result is overstated beyond the gate that generated it.
+The five phases execute in order. No live model call occurs in default tests,
+sealed evaluation data is never accepted for development selection or tuning,
+and no result is overstated beyond the gate that generated it.

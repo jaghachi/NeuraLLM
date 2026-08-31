@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 APPLICATION_ID = 0x4E4C4C4D  # ASCII "NLLM"
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +202,132 @@ MIGRATIONS = (
             )
             BEGIN
                 SELECT RAISE(ABORT, 'cannot insert turn after run finalization');
+            END
+            """,
+        ),
+    ),
+    Migration(
+        version=2,
+        name="phase3_analysis_evidence",
+        statements=(
+            """
+            CREATE TABLE turn_inputs (
+                condition_id TEXT PRIMARY KEY
+                    CHECK (
+                        length(condition_id) = 64
+                        AND condition_id NOT GLOB '*[^0-9a-f]*'
+                    ),
+                input_json TEXT NOT NULL,
+                input_sha256 TEXT NOT NULL
+                    CHECK (
+                        length(input_sha256) = 64
+                        AND input_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                FOREIGN KEY (condition_id) REFERENCES turns(condition_id)
+            ) STRICT
+            """,
+            """
+            CREATE TABLE analysis_manifest (
+                singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                manifest_json TEXT NOT NULL,
+                manifest_sha256 TEXT NOT NULL UNIQUE
+                    CHECK (
+                        length(manifest_sha256) = 64
+                        AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                FOREIGN KEY (singleton_id) REFERENCES run_manifest(singleton_id)
+            ) STRICT
+            """,
+            """
+            CREATE TABLE comparison_results (
+                comparison_id TEXT PRIMARY KEY
+                    CHECK (
+                        length(comparison_id) = 64
+                        AND comparison_id NOT GLOB '*[^0-9a-f]*'
+                    ),
+                analysis_singleton_id INTEGER NOT NULL DEFAULT 1
+                    CHECK (analysis_singleton_id = 1),
+                result_json TEXT NOT NULL,
+                result_sha256 TEXT NOT NULL
+                    CHECK (
+                        length(result_sha256) = 64
+                        AND result_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                FOREIGN KEY (analysis_singleton_id)
+                    REFERENCES analysis_manifest(singleton_id)
+            ) STRICT
+            """,
+            """
+            CREATE TABLE guardrail_results (
+                guardrail_id TEXT PRIMARY KEY
+                    CHECK (
+                        length(guardrail_id) = 64
+                        AND guardrail_id NOT GLOB '*[^0-9a-f]*'
+                    ),
+                analysis_singleton_id INTEGER NOT NULL DEFAULT 1
+                    CHECK (analysis_singleton_id = 1),
+                result_json TEXT NOT NULL,
+                result_sha256 TEXT NOT NULL
+                    CHECK (
+                        length(result_sha256) = 64
+                        AND result_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                FOREIGN KEY (analysis_singleton_id)
+                    REFERENCES analysis_manifest(singleton_id)
+            ) STRICT
+            """,
+            """
+            CREATE TABLE analysis_decision (
+                singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                decision_json TEXT NOT NULL,
+                decision_sha256 TEXT NOT NULL UNIQUE
+                    CHECK (
+                        length(decision_sha256) = 64
+                        AND decision_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                FOREIGN KEY (singleton_id) REFERENCES analysis_manifest(singleton_id)
+            ) STRICT
+            """,
+            """
+            CREATE TABLE analysis_finalization (
+                singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                finalization_json TEXT NOT NULL,
+                finalization_sha256 TEXT NOT NULL UNIQUE
+                    CHECK (
+                        length(finalization_sha256) = 64
+                        AND finalization_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                FOREIGN KEY (singleton_id) REFERENCES analysis_decision(singleton_id)
+            ) STRICT
+            """,
+            """
+            CREATE TRIGGER turn_inputs_insert_after_run_finalization_guard
+            BEFORE INSERT ON turn_inputs
+            WHEN EXISTS (
+                SELECT 1 FROM run_finalization WHERE singleton_id = 1
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'cannot insert turn input after run finalization');
+            END
+            """,
+            """
+            CREATE TRIGGER comparisons_insert_after_analysis_finalization_guard
+            BEFORE INSERT ON comparison_results
+            WHEN EXISTS (
+                SELECT 1 FROM analysis_finalization WHERE singleton_id = 1
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'cannot insert comparison after analysis finalization');
+            END
+            """,
+            """
+            CREATE TRIGGER guardrails_insert_after_analysis_finalization_guard
+            BEFORE INSERT ON guardrail_results
+            WHEN EXISTS (
+                SELECT 1 FROM analysis_finalization WHERE singleton_id = 1
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'cannot insert guardrail after analysis finalization');
             END
             """,
         ),

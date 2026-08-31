@@ -1,4 +1,4 @@
-"""Export the compact, deterministic Phase 2 view of a canonical run store."""
+"""Export compact deterministic views of canonical Phase 2 and Phase 3 stores."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from tempfile import NamedTemporaryFile
 
 from neurallm.domain.models import MetricValue, ResponseMetrics, RunManifest
 from neurallm.domain.serialization import canonical_json, canonical_sha256
-from neurallm.storage import SQLiteRunStore, StoredTurn, TurnState
+from neurallm.storage import SQLiteRunStore, StoredAnalysis, StoredTurn, TurnState
 
 CLOSED_RUN_ARTIFACTS = frozenset(
     {
@@ -59,11 +59,32 @@ _RESULT_FIELDS = (
     "semantic_similarity_available",
 )
 
-_COMPARISON_FIELDS = (
+_PHASE2_COMPARISON_FIELDS = (
     "comparison_id",
     "focal_policy_id",
     "comparator_policy_id",
     "estimate",
+    "status",
+)
+
+_PHASE3_COMPARISON_FIELDS = (
+    "comparison_id",
+    "focal_policy_id",
+    "comparator_policy_id",
+    "serious_comparator",
+    "unit_count",
+    "estimate",
+    "bootstrap_lower",
+    "bootstrap_upper",
+    "bootstrap_resamples",
+    "bootstrap_seed",
+    "permutation_p_value",
+    "permutation_exact",
+    "permutation_count",
+    "permutation_seed",
+    "holm_adjusted_p_value",
+    "behavioral_alias",
+    "guardrail_statuses",
     "status",
 )
 
@@ -77,6 +98,8 @@ class ArtifactExportSummary:
     scientific_result_sha256: str
     committed_turns: int
     artifact_names: tuple[str, ...]
+    implementation_phase: int
+    phase3_baseline_evaluator_verdict: str | None
 
 
 def _metric_value(metric: MetricValue[int] | MetricValue[float]) -> int | float | str:
@@ -188,6 +211,82 @@ def _decision_payload(manifest: RunManifest, turns: tuple[StoredTurn, ...]) -> d
     }
 
 
+def _phase3_comparison_rows(analysis: StoredAnalysis) -> tuple[dict[str, object], ...]:
+    focal_policy_id = analysis.manifest.evaluation_spec.focal_policy_id
+    return tuple(
+        {
+            "comparison_id": canonical_sha256(comparison),
+            "focal_policy_id": focal_policy_id,
+            "comparator_policy_id": comparison.comparator_policy_id,
+            "serious_comparator": comparison.serious_comparator,
+            "unit_count": comparison.unit_count,
+            "estimate": comparison.mean_difference,
+            "bootstrap_lower": comparison.bootstrap.lower,
+            "bootstrap_upper": comparison.bootstrap.upper,
+            "bootstrap_resamples": comparison.bootstrap.resamples,
+            "bootstrap_seed": comparison.bootstrap.seed,
+            "permutation_p_value": comparison.permutation.p_value,
+            "permutation_exact": comparison.permutation.exact,
+            "permutation_count": comparison.permutation.performed_permutations,
+            "permutation_seed": comparison.permutation.seed,
+            "holm_adjusted_p_value": (
+                "" if comparison.holm is None else comparison.holm.adjusted_p_value
+            ),
+            "behavioral_alias": comparison.behavioral_alias,
+            "guardrail_statuses": ";".join(
+                f"{guardrail.name.value}={guardrail.status.value}"
+                for guardrail in comparison.guardrails
+            ),
+            "status": comparison.verdict.value,
+        }
+        for comparison in analysis.result.comparisons
+    )
+
+
+def _phase3_decision_payload(
+    manifest: RunManifest,
+    turns: tuple[StoredTurn, ...],
+    analysis: StoredAnalysis,
+) -> dict[str, object]:
+    result = analysis.result
+    return {
+        "schema_version": 1,
+        "implementation_phase": 3,
+        "claim_scope": result.claim_scope,
+        "scientific_decision": None,
+        "phase3_baseline_evaluator_verdict": result.verdict.value,
+        "comparison_status": "available" if result.comparisons else "invalid_or_unavailable",
+        "decision_rule_version": manifest.decision_rule_version,
+        "manifest_sha256": canonical_sha256(manifest),
+        "scientific_result_sha256": scientific_result_sha256(turns),
+        "analysis_manifest_sha256": canonical_sha256(analysis.manifest),
+        "analysis_finalization_sha256": canonical_sha256(analysis.finalization),
+        "evaluation_input_sha256": result.input_sha256,
+        "evaluation_result_sha256": result.result_sha256,
+        "evaluation_spec": analysis.manifest.evaluation_spec.model_dump(mode="json"),
+        "evaluation_spec_sha256": analysis.manifest.evaluation_spec_sha256,
+        "action_magnitude_version": analysis.manifest.action_magnitude_version,
+        "static_selection_result_sha256": (analysis.manifest.static_selection_result_sha256),
+        "dataset_purpose": analysis.manifest.dataset_purpose.value,
+        "dataset_seal_sha256": analysis.manifest.dataset_seal_sha256,
+        "provider_type": manifest.provider_identity.provider_type,
+        "committed_turns": len(turns),
+        "comparison_count": len(result.comparisons),
+        "coverage": result.coverage.model_dump(mode="json"),
+        "global_guardrails": tuple(
+            guardrail.model_dump(mode="json") for guardrail in result.global_guardrails
+        ),
+        "statistics_computed": result.statistics_computed,
+        "statistics_call_count": result.statistics_call_count,
+        "database_integrity_verified": True,
+        "rationale": (
+            "This is a Phase 3 baseline-evaluator result within the declared synthetic or "
+            "sealed-data protocol. It validates comparison behavior only and does not make "
+            "a Phase 5 end-to-end efficacy or persistent-state attribution decision."
+        ),
+    }
+
+
 def _report_text(manifest: RunManifest, turns: tuple[StoredTurn, ...]) -> str:
     return (
         "# NeuraLLM Phase 2 Engineering Report\n\n"
@@ -204,6 +303,78 @@ def _report_text(manifest: RunManifest, turns: tuple[StoredTurn, ...]) -> str:
         "`comparisons.csv` is intentionally empty because serious comparators and statistical "
         "evaluation begin in Phase 3. The canonical response and metric evidence remains in "
         "`run.sqlite3`; the other files are deterministic derived views.\n"
+    )
+
+
+def _phase3_report_text(
+    manifest: RunManifest,
+    turns: tuple[StoredTurn, ...],
+    analysis: StoredAnalysis,
+) -> str:
+    result = analysis.result
+    policy_activity: dict[str, list[float]] = {}
+    for outcome in result.outcomes:
+        policy_activity.setdefault(outcome.policy_id, []).append(outcome.action_magnitude)
+    activity_lines = (
+        "\n".join(
+            f"- `{policy_id}` mean normalized action magnitude: `{sum(values) / len(values):.6f}`"
+            for policy_id, values in sorted(policy_activity.items())
+        )
+        if policy_activity
+        else "- No controller-activity summary is available because evaluation was invalidated."
+    )
+    comparison_lines = (
+        "\n".join(
+            f"- `{analysis.manifest.evaluation_spec.focal_policy_id}` vs "
+            f"`{comparison.comparator_policy_id}`: `{comparison.verdict.value}`, "
+            f"mean difference `{comparison.mean_difference:.6f}`, "
+            f"{analysis.manifest.evaluation_spec.confidence_level * 100:.1f}% configured "
+            f"CI `[ {comparison.bootstrap.lower:.6f}, "
+            f"{comparison.bootstrap.upper:.6f} ]`."
+            for comparison in result.comparisons
+        )
+        if result.comparisons
+        else "- No pairwise comparisons were computed; inspect the invalid guardrails below."
+    )
+    guardrails = tuple(result.global_guardrails) + tuple(
+        guardrail for comparison in result.comparisons for guardrail in comparison.guardrails
+    )
+    guardrail_lines = "\n".join(
+        f"- `{guardrail.name.value}`"
+        f"{f' (`{guardrail.policy_id}`)' if guardrail.policy_id else ''}: "
+        f"`{guardrail.status.value}` — {guardrail.detail}"
+        for guardrail in guardrails
+    )
+    return (
+        "# NeuraLLM Phase 3 Baseline Evaluator Report\n\n"
+        "## Scope\n\n"
+        "This report covers the Phase 3 baseline and statistical-evaluator protocol only. "
+        "It does not establish neural-controller efficacy or persistent-state attribution.\n\n"
+        "## Engineering validity\n\n"
+        f"- Manifest SHA-256: `{canonical_sha256(manifest)}`\n"
+        f"- Scientific result SHA-256: `{scientific_result_sha256(turns)}`\n"
+        f"- Evaluation result SHA-256: `{result.result_sha256}`\n"
+        f"- Provider identity: `{manifest.provider_identity.identity_id}`\n"
+        f"- Committed turns: `{len(turns)}`\n"
+        f"- Exact matched coverage: `{result.coverage.exact}`\n"
+        f"- Statistics computed: `{result.statistics_computed}` "
+        f"(`{result.statistics_call_count}` calls)\n\n"
+        "## Baseline evaluator validation\n\n"
+        f"{comparison_lines}\n\n"
+        "## Controller activity\n\n"
+        f"{activity_lines}\n\n"
+        "## Guardrail outcomes\n\n"
+        f"{guardrail_lines}\n\n"
+        "## End-to-end efficacy\n\n"
+        "Not assessed in Phase 3. No final scientific decision is emitted.\n\n"
+        "## Persistent-state attribution\n\n"
+        "Not assessed; the matched-history state-reset comparator begins in Phase 4.\n\n"
+        "## Limitations\n\n"
+        "A Phase 3 verdict describes behavior under this frozen baseline-evaluator protocol. "
+        "It cannot be promoted to a neural-efficacy, biological-substrate, or Phase 5 claim.\n\n"
+        "## Phase 3 result\n\n"
+        f"Baseline evaluator verdict: `{result.verdict.value}`. "
+        "`scientific_decision` remains `null`.\n"
     )
 
 
@@ -239,7 +410,7 @@ def scientific_result_sha256(turns: tuple[StoredTurn, ...]) -> str:
 
 
 def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
-    """Verify and export exactly the compact Phase 2 artifact set."""
+    """Verify and export exactly the compact artifact set for a closed run."""
 
     if not isinstance(output_directory, Path):
         raise TypeError("output_directory must be a pathlib.Path")
@@ -272,15 +443,34 @@ def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
             raise ValueError(
                 "finalized scientific result hash does not match the recomputed output"
             )
+        analysis = store.get_analysis()
+        if manifest.decision_rule_version == "phase3-baseline-evaluator-v1":
+            if analysis is None:
+                raise ValueError("Phase 3 run is missing finalized analysis evidence")
+        elif analysis is not None:
+            raise ValueError("pre-Phase 3 run unexpectedly contains analysis evidence")
         store.compact()
 
     result_rows = tuple(_result_row(turn) for turn in turns)
-    decision = _decision_payload(manifest, turns)
+    comparison_fields: tuple[str, ...]
+    if analysis is None:
+        comparison_fields = _PHASE2_COMPARISON_FIELDS
+        comparison_rows: tuple[dict[str, object], ...] = ()
+        decision = _decision_payload(manifest, turns)
+        report = _report_text(manifest, turns)
+    else:
+        comparison_fields = _PHASE3_COMPARISON_FIELDS
+        comparison_rows = _phase3_comparison_rows(analysis)
+        decision = _phase3_decision_payload(manifest, turns, analysis)
+        report = _phase3_report_text(manifest, turns, analysis)
     _write_atomic(output_directory / "manifest.json", canonical_json(manifest) + "\n")
     _write_atomic(output_directory / "results.csv", _csv_text(_RESULT_FIELDS, result_rows))
-    _write_atomic(output_directory / "comparisons.csv", _csv_text(_COMPARISON_FIELDS, ()))
+    _write_atomic(
+        output_directory / "comparisons.csv",
+        _csv_text(comparison_fields, comparison_rows),
+    )
     _write_atomic(output_directory / "decision.json", canonical_json(decision) + "\n")
-    _write_atomic(output_directory / "report.md", _report_text(manifest, turns))
+    _write_atomic(output_directory / "report.md", report)
     _reject_unexpected_files(output_directory)
     return ArtifactExportSummary(
         output_directory=output_directory,
@@ -288,6 +478,10 @@ def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
         scientific_result_sha256=result_sha256,
         committed_turns=len(turns),
         artifact_names=tuple(sorted(CLOSED_RUN_ARTIFACTS)),
+        implementation_phase=2 if analysis is None else 3,
+        phase3_baseline_evaluator_verdict=(
+            None if analysis is None else analysis.result.verdict.value
+        ),
     )
 
 

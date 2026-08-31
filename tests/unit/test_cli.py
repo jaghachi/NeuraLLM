@@ -1,4 +1,4 @@
-"""Tests for the explicit, zero-network-by-default Phase 2 CLI."""
+"""Tests for the explicit, zero-network-by-default Phase 3 CLI."""
 
 from __future__ import annotations
 
@@ -17,12 +17,13 @@ def test_status_is_machine_readable_and_truthful(capsys: Any) -> None:
     assert main(["status"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
-        "implementation_phase": 2,
+        "implementation_phase": 3,
         "live_provider_validated": False,
         "package": "neurallm",
         "phase_2_kernel_available": True,
+        "phase_3_baseline_evaluator_available": True,
         "scientific_decision": None,
-        "version": "2.0.0a2",
+        "version": "2.0.0a3",
     }
 
 
