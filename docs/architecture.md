@@ -2,15 +2,14 @@
 
 ## Status and purpose
 
-This living contract describes the NeuraLLM 2.0 architecture through Phase 3.
-The source tree reports version `2.0.0a3`. The current implementation preserves
-the Phase 2 experiment kernel and adds typed `best_static`, `random_matched`,
-and `heuristic_adaptive` policies; development-only static selection; typed
-dataset purposes and a canonical evaluation seal; exact matched-unit coverage;
-paired statistics and guardrails; schema-v2 durable analysis; and compact Phase
-3 reports. These are offline engineering and statistical-behavior capabilities.
-They are not evidence of live llama.cpp validity, neural activity, neural
-efficacy, or persistent-state attribution, and they never populate
+This living contract describes the NeuraLLM 2.0 architecture through Phase 4.
+The source tree reports version `2.0.0b1`. The current implementation preserves
+the Phase 2 experiment kernel and Phase 3 baseline evaluator, and adds one
+transparent five-state simulated neural mechanism with persistent and
+matched-focal-history substrate-reset roles. Phase 4 establishes deterministic
+controller activity and causal isolation under the fake provider. It is not
+evidence of live llama.cpp validity, neural benefit, a model-backed
+persistent-state effect, or a final scientific outcome, and it never populates
 `scientific_decision`.
 
 NeuraLLM asks one falsifiable question:
@@ -38,7 +37,7 @@ Production code is organized by domain, not by implementation phase.
 | --- | --- | --- |
 | `domain` | Immutable models, identifiers, canonical serialization, and hashes | Provider clients, policy logic, storage side effects |
 | `providers` | The common generation boundary, deterministic fake generation, and the strict llama.cpp adapter | Policy selection, metrics, retries, fallback routing |
-| `control` | Shared policy protocol, action bounds, and the implemented static, bounded-random, and heuristic baselines | Provider construction, experiment scheduling, evaluation decisions |
+| `control` | Shared policy protocol, action bounds, static/random/heuristic baselines, and the composed simulated neural controller | Provider construction, experiment scheduling, evaluation decisions |
 | `metrics` | Deterministic validators and versioned output metrics | Controller state transitions or policy feedback routing |
 | `experiments` | Deterministic planning, matching, scheduling, execution, and resume orchestration | Policy-specific mode dispatch or statistical claims |
 | `evaluation` | Exact coverage, sequence-level aggregation, guardrails, paired statistics, and Phase 3 verdicts | Generation, mutation of source run evidence, or a Phase 5 scientific decision |
@@ -71,8 +70,8 @@ class ControlPolicy(Protocol):
 ```
 
 The composition root maps the strict discriminated `PolicySpec` union to a
-runtime before execution; the runner does not branch on policy mode strings in
-the turn loop. The implemented Phase 3 variants are:
+runtime before execution; the runner does not branch on legacy policy mode
+strings in the turn loop. The implemented variants are:
 
 - `BestStaticPolicySpec` / `best_static`: stateless, no history access, and
   zero deltas from the development-selected base profile.
@@ -83,29 +82,36 @@ the turn loop. The implemented Phase 3 variants are:
   an exact zero action at turn zero, access only to its own previous response
   metrics, declared repetition/adherence/length reactions, and clean-response
   decay toward zero.
+- `NeuralPersistentPolicySpec` / `neural_persistent`: a five-variable bounded
+  substrate, own-previous-response history, and persistent serialized state.
+- `NeuralMatchedHistoryStateResetPolicySpec` /
+  `neural_matched_history_state_reset`: the same mechanism and decoder, exact
+  focal previous history, and one declared substrate-only reset intervention.
 
 Policy state is explicit and passed through the common interface; global mutable
 controller state is prohibited. Policy-specific traces are nested inside one
 common applied-action trace in schema-v2 runs.
 
-The following composition is reserved for the Phase 4 neural policy and is not
-implemented or evaluated in Phase 3:
+The neural policy is composed rather than implemented as a controller monolith:
 
 ```text
 ControllerObservation
     -> ObservationEncoder
-    -> NeuralStimulus
+    -> EncodedObservation
     -> NeuralSubstrate
-    -> NeuralReadout
     -> ActionDecoder
     -> ControllerAction
 ```
 
-Any future substrate must be a small deterministic dynamical system with
-interpretable, bounded state and explicit equations rather than a learned opaque
-network. This reserved boundary permits a future adapter without changing the
-experiment runner or evaluator. It does not imply that a neural substrate, a
-state-reset comparator, or live CL1 integration exists in the current source.
+The substrate state is exactly `excitation`, `inhibition`, `adaptation`,
+`fatigue`, and `context`. Initial values and per-turn seed drive are derived
+from the declared controller seed through canonical SHA-256. Five fixed linear
+update equations are clipped and quantized to explicit bounds; there are no
+learned weights, global RNG, mutable object state, I/O, or hidden feedback.
+The trace records the encoding, stored/effective/pre/post substrate states,
+per-variable saturation, decoder activations, normalized action magnitude, and
+reset marker. Turn zero gates the action to exact zero without inventing prior
+metrics.
 
 ## Shared provider boundary
 
@@ -152,7 +158,7 @@ Core boundaries use strict immutable models rather than untyped dictionaries.
 | `ControllerObservation` | Only the current turn index, prompt family, current prompt features, nullable prior-response metrics, and an explicit history-presence flag |
 | `ResponseMetrics` | Output measures whose entries carry value, availability, metric version, and input hash |
 | `ExperimentCondition` | Unique binding of experiment, dataset, prompt sequence, turn, policy, model seed, controller seed, provider identity, and base decoding profile |
-| `RunManifest` | Source, configuration, data, provider, policy, metric, seed, bounds, decision-rule, database-schema, and pre-execution Phase 3 analysis-contract identities |
+| `RunManifest` | Source, configuration, data, provider, policy, metric, seed, bounds, decision-rule, database-schema, optional declared matched-history source edge, and pre-execution Phase 3 analysis-contract identities |
 | `DatasetSeal` | Evaluation purpose, dataset ID/version, dataset SHA-256, and canonical seal identity |
 | `StaticSelectionRecord` | Development-only candidate grid, fixed `max_tokens`, canonical matched-unit keys, aligned score vectors, deterministic winner, and selection-result hash |
 | `EvaluationSpec` | Focal/comparator roles, aggregation and statistical methods, seeds, thresholds, and guardrail limits |
@@ -229,7 +235,16 @@ evaluation inputs. Fake-provider execution establishes an offline
 provider-to-artifact and evaluator-validation path; it must not be described as
 live-provider validation or model efficacy.
 
-## Baseline evaluation and future attribution are different experiments
+Phase 4 preserves that loop and adds a manifest-declared causal predecessor.
+Plans containing matched history are deterministically interleaved by logical
+turn. Before any dispatch, the runner verifies that every declared predecessor
+exists and is scheduled earlier. At turn `t > 0`, both neural arms bind the
+exact committed `neural_persistent[t-1]` condition for metrics and policy-state
+rehydration. The reset policy then substitutes only the seed-derived substrate;
+controller seed, action bounds, and real logical turn index remain unchanged.
+The request is fully determined before the current provider response exists.
+
+## Baseline efficacy and matched-history attribution are different experiments
 
 The implemented Phase 3 baseline population is `best_static`,
 `random_matched`, and `heuristic_adaptive`. Each policy generates its own
@@ -241,11 +256,18 @@ required serious comparator, and `random_matched` as a negative control. This
 validates baseline and evaluator behavior; it is not a neural efficacy
 experiment.
 
-A future end-to-end efficacy population may add `neural_persistent` while
-preserving independent policy histories. Future persistent-state attribution
-would separately pair that focal policy with a matched-history state-reset arm.
-Neither neural arm exists in Phase 3, so no current artifact may report neural
-activity, neural benefit, or persistent-state attribution.
+Phase 4 implements `neural_persistent` for future independent-history efficacy
+and separately pairs it with `neural_matched_history_state_reset` for mechanism
+attribution. The reset arm is rejected from the current Phase 3 efficacy
+evaluator. Its own response and stored post-reset state are never selected as
+future focal history. SQLite permits only the manifest-declared
+reset-to-persistent edge while requiring every other condition axis and exact
+turn `t-1` to match.
+
+The fake-provider causal harness establishes controller activity, turn-zero
+provider-visible equivalence, exact focal-history matching, and isolation of the
+declared substrate reset. It does not establish better model output or a
+beneficial persistent-state effect; those remain Phase 5 questions.
 
 ## Storage and artifact boundary
 
@@ -268,6 +290,10 @@ prepared, dispatching, response-persisted, metrics-computed, and committed work
 within explicit transactions. Committed turns are never regenerated. A
 dispatched request with uncertain outcome fails closed unless the provider
 offers a verified idempotency mechanism; it is never silently retried.
+The existing predecessor columns also represent Phase 4 focal-history edges;
+no schema migration is needed. Their source policy is authorized by the
+immutable run manifest, and the predecessor commitment continues to bind the
+request, response, metrics, policy state, trace, and earlier commitment.
 
 Closed runs export only:
 
@@ -326,8 +352,8 @@ release gates; they are not runtime architecture.
 | --- | --- | --- |
 | 1. Clean foundation and contracts | Typed domain and protocol surfaces, canonical identities, fake provider, minimal CLI, zero-network tests, architecture documents | SQLite execution, resume, llama.cpp transport, scientific policies or results |
 | 2. Experiment kernel, storage, metrics, and llama.cpp | Complete provider-to-compact-artifact path, deterministic validators, strict llama.cpp, transaction/resume behavior | Comparator efficacy or neural claims |
-| 3. Baselines and statistical evaluator (current) | Typed static, random, and heuristic comparators; development-only selection; sealed-data identity; exact matching; paired evaluator, guardrails, and durable decision skeleton | Live-provider validity, neural activity or benefit, persistent-state attribution, or a final scientific decision |
-| 4. Simulated neural controller and attribution | One transparent persistent neural policy and causally clean matched-history reset control | Model-backed scientific conclusion |
+| 3. Baselines and statistical evaluator | Typed static, random, and heuristic comparators; development-only selection; sealed-data identity; exact matching; paired evaluator, guardrails, and durable decision skeleton | Live-provider validity, neural activity or benefit, persistent-state attribution, or a final scientific decision |
+| 4. Simulated neural controller and attribution (current) | One transparent persistent neural policy, causally clean matched-focal-history substrate reset, and fake-provider mechanism proof | Live/model-backed efficacy, beneficial persistent-state attribution, or a final scientific decision |
 | 5. Model-backed evaluation and closeout | Smoke, development pilot, frozen confirmatory run, and one declared final decision | Opportunistic retuning after confirmatory execution |
 
 Work advances in order only after the current phase gate passes. No additional

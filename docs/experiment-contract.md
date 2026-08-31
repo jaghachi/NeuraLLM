@@ -3,19 +3,18 @@
 ## Contract status
 
 This document defines the scientific invariants that implementation and
-preregistration must preserve. The source tree reports version `2.0.0a3` and
-implements Phase 3. It preserves the Phase 2 deterministic experiment kernel and
-adds typed static, bounded-random, and heuristic-adaptive policies;
-development-only frozen static selection; typed development, evaluation, and
-synthetic dataset purposes; a canonical evaluation seal; exact matched coverage;
-seeded paired statistics and explicit guardrails; durable schema-v2 analysis;
-and compact Phase 3 comparisons, decision, and report views.
+preregistration must preserve. The source tree reports version `2.0.0b1` and
+implements the Phase 4 engineering boundary. It preserves the Phase 2
+deterministic experiment kernel and Phase 3 baselines/evaluator, and adds one
+transparent deterministic five-state neural mechanism with persistent and
+matched-focal-history substrate-reset roles.
 
-The checked-in Phase 3 configurations use the deterministic fake provider and
-exercise the baseline evaluator offline. They do not establish live llama.cpp
-validity, a neural controller, neural efficacy, persistent-state attribution, a
-confirmatory model result, or a final scientific outcome. The Phase 3
-`scientific_decision` field is always null.
+The checked-in Phase 3 configurations exercise the baseline evaluator offline;
+the Phase 4 causal harness establishes neural controller activity and reset
+isolation under the deterministic fake provider. None establishes live
+llama.cpp validity, neural benefit, a model-backed persistent-state effect, a
+confirmatory result, or a final scientific outcome. `scientific_decision`
+remains null.
 
 The experiment is valid even if the neural controller has no benefit. A run may
 support only one final decision state, and engineering completion does not
@@ -82,9 +81,9 @@ at 192, selects `static-balanced-v1`, and has selection-result SHA-256
 This is an offline fixture identity, not proof that a confirmatory dataset was
 evaluated with a live model.
 
-### Future end-to-end efficacy
+### Implemented policy, future end-to-end efficacy
 
-The future efficacy population contains:
+The intended efficacy population contains:
 
 ```text
 best_static
@@ -93,7 +92,9 @@ heuristic_adaptive
 neural_persistent
 ```
 
-When implemented, each policy must operate independently:
+The first three arms retain their Phase 3 behavior, and
+`neural_persistent` is now implemented. A future efficacy run must keep every
+policy independent:
 
 - it produces its own response;
 - it observes metrics only from its own previous response;
@@ -102,26 +103,26 @@ When implemented, each policy must operate independently:
 
 The required serious primary comparators would be `best_static` and
 `heuristic_adaptive`. `random_matched` remains a negative-control and
-structured-action sanity comparison. `neural_persistent` is not implemented or
-evaluated in Phase 3.
+structured-action sanity comparison. Phase 4 does not place
+`neural_persistent` into the Phase 3 evaluator or make an efficacy claim.
 
-### Future persistent-state attribution
+### Implemented matched-history attribution mechanism
 
-The future attribution population would pair:
+The Phase 4 attribution harness pairs:
 
 ```text
 neural_persistent
 neural_matched_history_state_reset
 ```
 
-For each attribution turn, the reset arm would:
+For each attribution turn, the reset arm:
 
 - receives the exact committed previous-turn `ResponseMetrics` tuple from the
   paired focal `neural_persistent` condition;
 - preserves the real prompt-sequence turn index;
 - preserves the focal history-presence semantics;
-- resets neural substrate/controller state at the declared intervention
-  boundary;
+- loads the same focal controller-state envelope, then resets only the declared
+  five-variable neural substrate at the intervention boundary;
 - uses the same current prompt, model seed, action decoder, provider, base
   decoding parameters, and action bounds; and
 - never feeds its own response metrics into focal history.
@@ -133,7 +134,8 @@ replace any required efficacy comparator.
 At turn zero the paired attribution arms must be byte-equivalent before the
 state-reset intervention can have meaning. At later turns, focal-history hashes
 must match and tests must establish that only declared persistent state differs.
-No current Phase 3 result makes this attribution claim.
+Phase 4 tests establish this mechanism-level isolation and deterministic
+fake-provider activity. They do not establish a beneficial model-output effect.
 
 ## Experimental unit and condition identity
 
@@ -204,12 +206,18 @@ For turn `t > 0`, the observation may contain only metrics from a valid,
 committed response allowed by the selected analysis design:
 
 - the same policy's turn `t - 1` response for the implemented baseline paths
-  and future independent efficacy; or
+  and independent efficacy; or
 - the paired focal persistent arm's exact committed turn `t - 1` metric tuple
-  for future matched-history attribution.
+  for the implemented matched-history attribution mechanism.
 
 The current response can affect only a future action. Stale, uncommitted,
 wrong-policy, wrong-turn, wrong-sequence, or hash-mismatched history fails closed.
+
+The run manifest records the only permitted cross-policy source:
+`neural_matched_history_state_reset -> neural_persistent`. Plans with this edge
+are turn-interleaved and their complete causal predecessor graph is validated
+before any provider dispatch. Both later neural arms record the focal condition,
+commitment, and canonical metrics hashes in a Phase 4 causal trace.
 
 ## Generation budget and action surface
 
@@ -282,8 +290,9 @@ incomplete coverage is invalid before any statistical function is called. The
 ordinary fake-provider workflow remains an engineering/replay check and does
 not claim to manufacture those known outcomes.
 Fake output can establish the provider-to-artifact and evaluator engineering
-paths. It cannot prove live llama.cpp validity, neural efficacy, persistent-state
-causality, or a scientific model result.
+paths and the Phase 4 mechanism-level reset isolation. It cannot prove live
+llama.cpp validity, neural efficacy, a beneficial model-backed persistent-state
+effect, or a scientific model result.
 
 ## Provider identity and execution
 
@@ -441,10 +450,10 @@ all superior yields `superior`, all equivalent yields `equivalent`, any
 inferior yields `inferior`, and all other valid combinations yield
 `inconclusive`.
 
-This is a Phase 3 decision skeleton. A future neural policy must still be
-compared against both serious efficacy comparators, and `random_matched` must
-not replace either one. No current Phase 3 comparison supports neural benefit
-or persistent-state attribution.
+This remains a Phase 3 decision skeleton. A future neural efficacy run must
+compare `neural_persistent` against both serious efficacy comparators, and
+`random_matched` must not replace either one. The Phase 4 mechanism harness does
+not support neural benefit or a model-backed persistent-state effect.
 
 ## Phase 3 and final decision states
 
@@ -548,12 +557,13 @@ fake-provider behavior, and zero-network test seam. Phase 2 established the
 provider-to-artifact execution path, transactional resume, deterministic metric
 reconstruction, and strict provider contract behavior, but no live-provider
 claim without an explicit live run and no policy advantage under any
-circumstances. Phase 3 now establishes typed baseline and statistical-evaluator
+circumstances. Phase 3 establishes typed baseline and statistical-evaluator
 behavior under offline fake fixtures, frozen dataset identities, and synthetic
-known-outcome tests. It establishes no live-provider, neural, model-efficacy, or
-persistent-state result. Phase 4 may establish neural causal activity and clean
-persistent-state isolation but no model-backed benefit. Only the frozen Phase 5
-confirmatory experiment may produce the final scientific decision.
+known-outcome tests. It establishes no live-provider, neural efficacy, or
+model-backed persistent-state result. Phase 4 establishes deterministic neural
+mechanism activity and clean matched-history substrate-reset isolation under the
+fake provider, but no model-backed benefit. Only the frozen Phase 5 confirmatory
+experiment may produce the final scientific decision.
 
 The five phases execute in order. No live model call occurs in default tests,
 sealed evaluation data is never accepted for development selection or tuning,

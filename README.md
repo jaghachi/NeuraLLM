@@ -13,17 +13,18 @@ completion never depends on producing a positive scientific result.
 
 ## Current status
 
-The source tree reports package version `2.0.0a3` and implements Phase 3: typed
-static, bounded-random, and heuristic-adaptive baselines plus a deterministic
-paired statistical evaluator. Phase 2's provider-to-artifact kernel remains
-supported, including strict llama.cpp contract behavior and the deterministic
-fake provider.
+The source tree reports package version `2.0.0b1` and implements the Phase 4
+engineering boundary: the Phase 3 baselines and paired statistical evaluator,
+plus one transparent five-state simulated neural controller and its
+matched-focal-history substrate-reset attribution arm. Phase 2's
+provider-to-artifact kernel remains supported, including strict llama.cpp
+contract behavior and the deterministic fake provider.
 
-Phase 3 is an offline engineering and statistical-behavior validation gate. The
-checked-in fixtures use the fake provider. They do not establish live-provider
-validity, neural-controller efficacy, a model-backed result, or
-persistent-state attribution. No neural policy is evaluated in Phase 3, and
-`scientific_decision` remains `null`.
+Phase 4 proves controller activity and causal isolation with the deterministic
+fake provider. It does not establish live-provider validity, neural-controller
+benefit, a model-backed result, or a final persistent-state effect on model
+quality. The matched-reset arm is never admitted to the Phase 3 efficacy
+evaluator, and `scientific_decision` remains `null`.
 
 ## Implemented Phase 3 boundary
 
@@ -70,6 +71,34 @@ identity, provider identity, turn-zero history semantics, action bounds,
 required metric availability, adherence non-regression, response-length
 confounding, focal action saturation, and behavioral aliasing.
 
+## Implemented Phase 4 causal boundary
+
+Both neural arms use the same `ObservationEncoder`, deterministic
+`NeuralSubstrate`, `ActionDecoder`, shared `ControllerAction`, and run-level
+action bounds:
+
+- `neural_persistent` consumes only its own previous committed response metrics
+  and carries a five-variable bounded substrate.
+- `neural_matched_history_state_reset` is attribution-only. At turn `t > 0`, it
+  binds the exact `neural_persistent[t-1]` condition, commitment, metrics, and
+  controller-state envelope, then resets only the declared substrate before
+  applying the same transition equations and decoder.
+
+The run manifest records the sole authorized cross-policy history edge. SQLite
+rejects any other source policy or mismatch in experiment, dataset, sequence,
+turn, model seed, controller seed, provider identity, or base profile. The
+neural trace records encoding, stored and effective substrate states, transition
+equation and saturation evidence, four decoder activations, normalized action
+magnitude, reset status, focal condition/commitment/metrics hashes, and the
+existing step/legal action-clamp evidence.
+
+The checked-in `phase4-neural-causal-smoke.yaml` harness is turn-interleaved and
+provider-free until explicit execution. Tests prove identical turn-zero
+provider-visible inputs and fake responses, same focal metrics at later turns,
+reset-only state intervention, later decoding/response divergence, bounded
+actions, deterministic serialization, and zero provider calls on replay. This
+is mechanism evidence, not efficacy evidence.
+
 ## Install
 
 Python 3.12 is required. The intended local environment is:
@@ -89,8 +118,9 @@ python -m pip install -e .
 
 ## Current command surface
 
-The command surface is machine-readable and supports both the historical Phase
-2 smoke configuration and the Phase 3 offline fixtures:
+The command surface is machine-readable and supports the historical Phase 2
+smoke configuration, the Phase 3 offline fixtures, and the Phase 4 causal
+harness:
 
 ```powershell
 neurallm status
@@ -98,6 +128,7 @@ neurallm validate --config configs/experiments/phase3-baseline-evaluation.yaml
 neurallm plan --config configs/experiments/phase3-baseline-evaluation.yaml
 neurallm run --config configs/experiments/phase3-baseline-evaluation.yaml --dry-run
 neurallm run --config configs/experiments/phase3-synthetic-evaluator.yaml --execute
+neurallm run --config configs/experiments/phase4-neural-causal-smoke.yaml --dry-run
 neurallm analyze --run-dir runs/phase3-synthetic-evaluator-validation
 neurallm report --run-dir runs/phase3-synthetic-evaluator-validation
 ```
@@ -152,11 +183,11 @@ coverage without a model call.
 
 ## Scientific claim boundary
 
-Phase 3 establishes typed comparator behavior, frozen development-selection and
-evaluation identities, exact matched coverage, deterministic paired statistics,
-guardrails, durable schema-v2 analysis evidence, and compact reporting. It does
-not establish a neural efficacy result, persistent-state causality, live
-llama.cpp validity, or a final scientific outcome. The Phase 3 verdict vocabulary
+Phase 4 adds deterministic neural mechanism activity and a hash-bound,
+matched-focal-history reset isolation test to the Phase 3 comparator and
+evaluator evidence. It does not establish neural efficacy, a beneficial
+persistent-state effect on model output, live llama.cpp validity, or a final
+scientific outcome. The Phase 3 verdict vocabulary
 (`superior`, `inferior`, `equivalent`, `inconclusive`, `invalid`) validates the
 baseline evaluator under its fixture protocol; it is not any Phase 5 decision
 state.

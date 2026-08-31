@@ -31,6 +31,8 @@ from neurallm.experiments.dataset import (
     DatasetPurpose,
     DatasetSeal,
     LoadedDataset,
+    PromptCase,
+    PromptSequence,
     validate_dataset_identity,
 )
 from neurallm.experiments.matching import (
@@ -44,6 +46,7 @@ from neurallm.storage.migrations import CURRENT_SCHEMA_VERSION
 
 PHASE2_DECISION_RULE_VERSION = "phase2-no-scientific-decision-v1"
 PHASE3_DECISION_RULE_VERSION = "phase3-baseline-evaluator-v1"
+PHASE4_DECISION_RULE_VERSION = "phase4-neural-mechanism-only-v1"
 
 
 class _StrictFrozenModel(BaseModel):
@@ -139,6 +142,47 @@ class ExperimentPlan(_StrictFrozenModel):
                 or self.matched_units
             ):
                 raise ValueError("Phase 2 plan cannot contain Phase 3 evaluation evidence")
+            if self.decision_rule_version == PHASE4_DECISION_RULE_VERSION:
+                policy_ids = {turn.condition.policy_id for turn in self.turns}
+                if policy_ids != {
+                    "neural_persistent",
+                    "neural_matched_history_state_reset",
+                }:
+                    raise ValueError(
+                        "Phase 4 plan requires exactly the two neural attribution policies"
+                    )
+                if self.dataset_purpose is not DatasetPurpose.DEVELOPMENT:
+                    raise ValueError("Phase 4 plan requires a pinned development-purpose dataset")
+                persistent_coordinates = {
+                    (
+                        turn.condition.experiment_id,
+                        turn.condition.dataset_version,
+                        turn.condition.prompt_sequence_id,
+                        turn.condition.model_seed,
+                        turn.condition.controller_seed,
+                        turn.condition.provider_identity_id,
+                        turn.condition.base_decoding_profile_id,
+                        turn.condition.turn_index,
+                    )
+                    for turn in self.turns
+                    if turn.condition.policy_id == "neural_persistent"
+                }
+                reset_coordinates = {
+                    (
+                        turn.condition.experiment_id,
+                        turn.condition.dataset_version,
+                        turn.condition.prompt_sequence_id,
+                        turn.condition.model_seed,
+                        turn.condition.controller_seed,
+                        turn.condition.provider_identity_id,
+                        turn.condition.base_decoding_profile_id,
+                        turn.condition.turn_index,
+                    )
+                    for turn in self.turns
+                    if turn.condition.policy_id == "neural_matched_history_state_reset"
+                }
+                if persistent_coordinates != reset_coordinates:
+                    raise ValueError("Phase 4 plan requires exact paired turn coverage")
             return self
         if self.evaluation_spec_sha256 != canonical_sha256(self.evaluation):
             raise ValueError("evaluation_spec_sha256 does not match EvaluationSpec")
@@ -194,9 +238,21 @@ def build_plan(
         raise ValueError("configured metric versions do not match the implementation")
     if not 1 <= config.database_schema_version <= CURRENT_SCHEMA_VERSION:
         raise ValueError("configured database schema version is not supported")
+    has_matched_history = any(
+        spec.history_access == "matched_focal_previous_response"
+        for spec in (config.policy_specs or ())
+    )
+    if has_matched_history and config.dataset.purpose is not DatasetPurpose.DEVELOPMENT:
+        raise ValueError("Phase 4 requires a pinned development-purpose dataset")
     if config.evaluation is None:
-        if config.decision_rule_version != PHASE2_DECISION_RULE_VERSION:
-            raise ValueError("configured decision rule version does not match Phase 2")
+        expected_rule = (
+            PHASE4_DECISION_RULE_VERSION if has_matched_history else PHASE2_DECISION_RULE_VERSION
+        )
+        if config.decision_rule_version != expected_rule:
+            phase = "Phase 4" if has_matched_history else "Phase 2"
+            raise ValueError(f"configured decision rule version does not match {phase}")
+        if has_matched_history and config.database_schema_version != CURRENT_SCHEMA_VERSION:
+            raise ValueError("Phase 4 requires the current database schema version")
     else:
         if config.database_schema_version != CURRENT_SCHEMA_VERSION:
             raise ValueError("Phase 3 requires the current database schema version")
@@ -205,34 +261,80 @@ def build_plan(
 
     turns: list[PlannedTurn] = []
     provider_identity_id = config.provider.expected_identity.identity_id
-    for sequence in sorted(dataset.sequences, key=lambda item: item.sequence_id):
-        for policy_id in config.configured_policy_ids:
+
+    def append_turn(
+        sequence: PromptSequence,
+        policy_id: str,
+        model_seed: int,
+        controller_seed: int,
+        turn_index: int,
+        prompt_case: PromptCase,
+    ) -> None:
+        parameters = config.base_decoding_profile.with_seed(model_seed)
+        condition = ExperimentCondition(
+            experiment_id=config.experiment_id,
+            dataset_version=dataset.version,
+            prompt_sequence_id=sequence.sequence_id,
+            turn_index=turn_index,
+            policy_id=policy_id,
+            model_seed=model_seed,
+            controller_seed=controller_seed,
+            provider_identity_id=provider_identity_id,
+            base_decoding_profile_id=config.base_decoding_profile_id,
+        )
+        turns.append(
+            PlannedTurn(
+                condition=condition,
+                prompt_case_id=prompt_case.case_id,
+                prompt_family=prompt_case.prompt_family,
+                prompt_features=prompt_case.prompt_features,
+                prompt=prompt_case.prompt,
+                validator=prompt_case.validator,
+                decoding_parameters=parameters,
+            )
+        )
+
+    policy_specs = config.policy_specs or ()
+    matched_source_ids = {
+        spec.policy_id
+        for spec in policy_specs
+        if spec.history_access == "matched_focal_previous_response"
+    }
+    sequences = sorted(dataset.sequences, key=lambda item: item.sequence_id)
+    if matched_source_ids:
+        policy_order = tuple(
+            sorted(
+                config.configured_policy_ids,
+                key=lambda policy_id: (policy_id in matched_source_ids, policy_id),
+            )
+        )
+        for sequence in sequences:
             for model_seed in sorted(config.model_seeds):
-                parameters = config.base_decoding_profile.with_seed(model_seed)
                 for controller_seed in sorted(config.controller_seeds):
                     for turn_index, prompt_case in enumerate(sequence.cases):
-                        condition = ExperimentCondition(
-                            experiment_id=config.experiment_id,
-                            dataset_version=dataset.version,
-                            prompt_sequence_id=sequence.sequence_id,
-                            turn_index=turn_index,
-                            policy_id=policy_id,
-                            model_seed=model_seed,
-                            controller_seed=controller_seed,
-                            provider_identity_id=provider_identity_id,
-                            base_decoding_profile_id=config.base_decoding_profile_id,
-                        )
-                        turns.append(
-                            PlannedTurn(
-                                condition=condition,
-                                prompt_case_id=prompt_case.case_id,
-                                prompt_family=prompt_case.prompt_family,
-                                prompt_features=prompt_case.prompt_features,
-                                prompt=prompt_case.prompt,
-                                validator=prompt_case.validator,
-                                decoding_parameters=parameters,
+                        for policy_id in policy_order:
+                            append_turn(
+                                sequence,
+                                policy_id,
+                                model_seed,
+                                controller_seed,
+                                turn_index,
+                                prompt_case,
                             )
-                        )
+    else:
+        for sequence in sequences:
+            for policy_id in config.configured_policy_ids:
+                for model_seed in sorted(config.model_seeds):
+                    for controller_seed in sorted(config.controller_seeds):
+                        for turn_index, prompt_case in enumerate(sequence.cases):
+                            append_turn(
+                                sequence,
+                                policy_id,
+                                model_seed,
+                                controller_seed,
+                                turn_index,
+                                prompt_case,
+                            )
 
     matched_units = (
         ()
@@ -283,6 +385,7 @@ def build_plan(
 __all__ = [
     "PHASE2_DECISION_RULE_VERSION",
     "PHASE3_DECISION_RULE_VERSION",
+    "PHASE4_DECISION_RULE_VERSION",
     "ExperimentPlan",
     "PlannedTurn",
     "build_plan",

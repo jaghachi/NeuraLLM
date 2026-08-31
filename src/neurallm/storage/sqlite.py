@@ -1300,11 +1300,20 @@ class SQLiteRunStore:
             raise HistoryMismatchError("history predecessor is absent or not committed")
         if previous.history_commitment_sha256 != history.previous_history_commitment_sha256:
             raise HistoryMismatchError("history commitment hash does not match the predecessor")
+        manifest = self._require_manifest()
+        expected_source_policy_id = manifest.matched_history_policy_sources.get(
+            condition.policy_id,
+            condition.policy_id,
+        )
+        if previous.condition.policy_id != expected_source_policy_id:
+            raise HistoryMismatchError(
+                "history predecessor belongs to different matched conditions or an "
+                "undeclared source policy"
+            )
         current_axes = (
             condition.experiment_id,
             condition.dataset_version,
             condition.prompt_sequence_id,
-            condition.policy_id,
             condition.model_seed,
             condition.controller_seed,
             condition.provider_identity_id,
@@ -1314,7 +1323,6 @@ class SQLiteRunStore:
             previous.condition.experiment_id,
             previous.condition.dataset_version,
             previous.condition.prompt_sequence_id,
-            previous.condition.policy_id,
             previous.condition.model_seed,
             previous.condition.controller_seed,
             previous.condition.provider_identity_id,
@@ -1522,11 +1530,19 @@ class SQLiteRunStore:
             raise StoreCorruptionError("stored history predecessor is not committed")
         if previous.history_commitment_sha256 != history.previous_history_commitment_sha256:
             raise StoreCorruptionError("stored predecessor history commitment is mismatched")
+        manifest = self._require_manifest()
+        expected_source_policy_id = manifest.matched_history_policy_sources.get(
+            condition.policy_id,
+            condition.policy_id,
+        )
+        if previous.condition.policy_id != expected_source_policy_id:
+            raise StoreCorruptionError(
+                "stored history crosses unmatched condition axes or an undeclared source policy"
+            )
         current_axes = (
             condition.experiment_id,
             condition.dataset_version,
             condition.prompt_sequence_id,
-            condition.policy_id,
             condition.model_seed,
             condition.controller_seed,
             condition.provider_identity_id,
@@ -1536,7 +1552,6 @@ class SQLiteRunStore:
             previous.condition.experiment_id,
             previous.condition.dataset_version,
             previous.condition.prompt_sequence_id,
-            previous.condition.policy_id,
             previous.condition.model_seed,
             previous.condition.controller_seed,
             previous.condition.provider_identity_id,

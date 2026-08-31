@@ -18,6 +18,7 @@ from neurallm.domain.models import (
     ControllerAction,
     DecodingBounds,
     PromptFeatures,
+    RunManifest,
     SeedSchedule,
     UnitIntervalMetricValue,
 )
@@ -240,6 +241,24 @@ def _synthetic_manifest() -> AnalysisManifest:
     )
 
 
+def _manifest_matching_phase3_plan(plan: ExperimentPlan) -> RunManifest:
+    return make_manifest(plan.provider_identity).model_copy(
+        update={
+            "experiment_config_hash": plan.experiment_config_hash,
+            "dataset_hash": plan.dataset_hash,
+            "provider_effective_configuration_json": (plan.provider_effective_configuration_json),
+            "policy_config_hashes": {"test-policy": canonical_sha256("test-policy")},
+            "metric_versions": dict(plan.metric_versions),
+            "seed_schedule": SeedSchedule(model_seeds=(7,), controller_seeds=(11,)),
+            "action_bounds": plan.action_bounds,
+            "decoding_bounds": plan.decoding_bounds,
+            "decision_rule_version": PHASE3_DECISION_RULE_VERSION,
+            "database_schema_version": plan.database_schema_version,
+            "phase3_analysis_contract_sha256": build_phase3_analysis_contract_sha256(plan),
+        }
+    )
+
+
 def _validate_dataset_boundary(manifest: AnalysisManifest) -> AnalysisManifest:
     validator = cast(
         Callable[[], AnalysisManifest],
@@ -397,21 +416,7 @@ def test_build_design_rejects_noncontiguous_turn_indexes() -> None:
 
 def test_manifest_plan_match_is_exact() -> None:
     plan = _phase3_plan()
-    manifest = make_manifest(plan.provider_identity).model_copy(
-        update={
-            "experiment_config_hash": plan.experiment_config_hash,
-            "dataset_hash": plan.dataset_hash,
-            "provider_effective_configuration_json": (plan.provider_effective_configuration_json),
-            "policy_config_hashes": {"test-policy": canonical_sha256("test-policy")},
-            "metric_versions": dict(plan.metric_versions),
-            "seed_schedule": SeedSchedule(model_seeds=(7,), controller_seeds=(11,)),
-            "action_bounds": plan.action_bounds,
-            "decoding_bounds": plan.decoding_bounds,
-            "decision_rule_version": PHASE3_DECISION_RULE_VERSION,
-            "database_schema_version": plan.database_schema_version,
-            "phase3_analysis_contract_sha256": (build_phase3_analysis_contract_sha256(plan)),
-        }
-    )
+    manifest = _manifest_matching_phase3_plan(plan)
 
     _validate_plan_manifest(plan, manifest)
     with pytest.raises(StoreInvariantError, match="does not exactly match"):
@@ -419,6 +424,20 @@ def test_manifest_plan_match_is_exact() -> None:
             plan,
             manifest.model_copy(update={"experiment_config_hash": "f" * 64}),
         )
+
+
+def test_phase3_analysis_rejects_a_nonempty_matched_history_map() -> None:
+    plan = _phase3_plan()
+    manifest = _manifest_matching_phase3_plan(plan).model_copy(
+        update={
+            "matched_history_policy_sources": {
+                "neural_matched_history_state_reset": "neural_persistent"
+            }
+        }
+    )
+
+    with pytest.raises(StoreInvariantError, match="does not exactly match"):
+        _validate_plan_manifest(plan, manifest)
 
 
 @pytest.mark.parametrize(

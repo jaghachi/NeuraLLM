@@ -1,4 +1,4 @@
-"""Strict, immutable configuration records for Phase 3 control policies."""
+"""Strict, immutable configuration records for control policies."""
 
 from __future__ import annotations
 
@@ -62,8 +62,35 @@ class HeuristicAdaptivePolicySpec(_StrictFrozenModel):
         return self
 
 
+class NeuralPersistentPolicySpec(_StrictFrozenModel):
+    """Identity of the persistent simulated-neural controller."""
+
+    kind: Literal["neural_persistent"] = "neural_persistent"
+    policy_id: Literal["neural_persistent"] = "neural_persistent"
+    implementation_version: Literal["simulated-neural-v1"] = "simulated-neural-v1"
+    state_schema_version: Literal["simulated-neural-state-v1"] = "simulated-neural-state-v1"
+    history_access: Literal["own_previous_response"] = "own_previous_response"
+    state_intervention: Literal["none"] = "none"
+
+
+class NeuralMatchedHistoryStateResetPolicySpec(_StrictFrozenModel):
+    """Identity of the attribution-only matched-history substrate reset arm."""
+
+    kind: Literal["neural_matched_history_state_reset"] = "neural_matched_history_state_reset"
+    policy_id: Literal["neural_matched_history_state_reset"] = "neural_matched_history_state_reset"
+    implementation_version: Literal["simulated-neural-v1"] = "simulated-neural-v1"
+    state_schema_version: Literal["simulated-neural-state-v1"] = "simulated-neural-state-v1"
+    history_access: Literal["matched_focal_previous_response"] = "matched_focal_previous_response"
+    history_source_policy_id: Literal["neural_persistent"] = "neural_persistent"
+    state_intervention: Literal["reset_substrate"] = "reset_substrate"
+
+
 PolicySpec = Annotated[
-    BestStaticPolicySpec | RandomMatchedPolicySpec | HeuristicAdaptivePolicySpec,
+    BestStaticPolicySpec
+    | RandomMatchedPolicySpec
+    | HeuristicAdaptivePolicySpec
+    | NeuralPersistentPolicySpec
+    | NeuralMatchedHistoryStateResetPolicySpec,
     Field(discriminator="kind"),
 ]
 
@@ -71,6 +98,8 @@ PolicySpec = Annotated[
 __all__ = [
     "BestStaticPolicySpec",
     "HeuristicAdaptivePolicySpec",
+    "NeuralMatchedHistoryStateResetPolicySpec",
+    "NeuralPersistentPolicySpec",
     "PolicySpec",
     "RandomMatchedPolicySpec",
 ]

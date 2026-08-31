@@ -57,6 +57,10 @@ UnitInterval = Annotated[
     Field(ge=0.0, le=1.0, allow_inf_nan=False),
 ]
 
+_PHASE4_MATCHED_HISTORY_POLICY_SOURCES = {
+    "neural_matched_history_state_reset": "neural_persistent",
+}
+
 
 class StrictFrozenModel(BaseModel):
     """Shared fail-closed configuration for scientific domain records."""
@@ -313,6 +317,10 @@ class RunManifest(StrictFrozenModel):
     provider_identity: ProviderIdentity
     provider_effective_configuration_json: NonEmptyString
     policy_config_hashes: Mapping[NonEmptyString, Sha256Hex]
+    matched_history_policy_sources: Mapping[NonEmptyString, NonEmptyString] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
     metric_versions: Mapping[NonEmptyString, NonEmptyString]
     seed_schedule: SeedSchedule
     action_bounds: ActionBounds
@@ -334,6 +342,14 @@ class RunManifest(StrictFrozenModel):
             raise ValueError("manifest mappings must not be empty")
         return MappingProxyType(dict(sorted(value.items())))
 
+    @field_validator("matched_history_policy_sources")
+    @classmethod
+    def _freeze_matched_history_sources(
+        cls,
+        value: Mapping[str, str],
+    ) -> Mapping[str, str]:
+        return MappingProxyType(dict(sorted(value.items())))
+
     @field_serializer("policy_config_hashes", "metric_versions")
     def _serialize_mappings(
         self,
@@ -341,8 +357,33 @@ class RunManifest(StrictFrozenModel):
     ) -> dict[str, str]:
         return dict(value)
 
+    @field_serializer("matched_history_policy_sources")
+    def _serialize_matched_history_sources(
+        self,
+        value: Mapping[str, str],
+    ) -> dict[str, str]:
+        return dict(value)
+
     @model_validator(mode="after")
     def _validate_provider_config_hash(self) -> Self:
+        configured_policies = set(self.policy_config_hashes)
+        if self.matched_history_policy_sources and (
+            dict(self.matched_history_policy_sources) != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES
+        ):
+            raise ValueError("manifest permits only the Phase 4 matched-history policy edge")
+        phase4 = self.decision_rule_version == "phase4-neural-mechanism-only-v1"
+        if phase4 != bool(self.matched_history_policy_sources):
+            raise ValueError("Phase 4 decision rule and matched-history edge must appear together")
+        if phase4 and configured_policies != {
+            "neural_persistent",
+            "neural_matched_history_state_reset",
+        }:
+            raise ValueError("Phase 4 manifest requires exactly the two neural policies")
+        for policy_id, source_policy_id in self.matched_history_policy_sources.items():
+            if policy_id == source_policy_id:
+                raise ValueError("matched history source must name another policy")
+            if policy_id not in configured_policies or source_policy_id not in configured_policies:
+                raise ValueError("matched history policies must both exist in policy_config_hashes")
         if self.provider_config_hash != self.provider_identity.provider_config_hash:
             raise ValueError(
                 "provider_config_hash must match provider_identity.provider_config_hash"

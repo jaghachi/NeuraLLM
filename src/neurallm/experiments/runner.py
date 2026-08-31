@@ -12,6 +12,13 @@ from pydantic import SerializeAsAny, model_validator
 
 from neurallm.control.action_space import ActionApplication, apply_action
 from neurallm.control.heuristic import HeuristicAdaptivePolicy, HeuristicAdaptiveState
+from neurallm.control.neural import (
+    NeuralMatchedHistoryStateResetPolicy,
+    NeuralPersistentPolicy,
+    NeuralPolicyState,
+    NeuralPolicyTrace,
+    SimulatedNeuralPolicy,
+)
 from neurallm.control.policy import (
     ControlPolicy,
     PolicyContext,
@@ -22,15 +29,19 @@ from neurallm.control.random_policy import RandomMatchedPolicy, RandomMatchedSta
 from neurallm.control.specs import (
     BestStaticPolicySpec,
     HeuristicAdaptivePolicySpec,
+    NeuralMatchedHistoryStateResetPolicySpec,
+    NeuralPersistentPolicySpec,
     PolicySpec,
     RandomMatchedPolicySpec,
 )
 from neurallm.control.static import BestStaticPolicy, FixedPolicy
 from neurallm.domain.models import (
     ControllerObservation,
+    NonEmptyString,
     ProviderIdentity,
     RunManifest,
     SeedSchedule,
+    Sha256Hex,
 )
 from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.experiments.plan import ExperimentPlan, PlannedTurn
@@ -74,6 +85,47 @@ class DetailedAppliedPolicyTrace(AppliedPolicyTrace):
         return self
 
 
+class CausalAppliedPolicyTrace(AppliedPolicyTrace):
+    """Phase 4 neural trace bound to its exact committed observation source."""
+
+    trace_schema_version: Literal["phase4-causal-applied-policy-trace-v1"] = (
+        "phase4-causal-applied-policy-trace-v1"
+    )
+    history_access: Literal[
+        "own_previous_response",
+        "matched_focal_previous_response",
+    ]
+    observation_has_previous_response: bool
+    history_source_policy_id: NonEmptyString | None
+    history_source_condition_id: Sha256Hex | None
+    history_commitment_sha256: Sha256Hex | None
+    observation_metrics_sha256: Sha256Hex | None
+    policy_trace: SerializeAsAny[NeuralPolicyTrace]
+
+    @model_validator(mode="after")
+    def validate_causal_history(self) -> Self:
+        expected = self.turn_index > 0
+        if self.observation_has_previous_response != expected:
+            raise ValueError("neural observation history does not match the logical turn")
+        evidence = (
+            self.history_source_policy_id,
+            self.history_source_condition_id,
+            self.history_commitment_sha256,
+            self.observation_metrics_sha256,
+        )
+        if expected and any(value is None for value in evidence):
+            raise ValueError("neural history evidence must be complete exactly after turn zero")
+        if not expected and any(value is not None for value in evidence):
+            raise ValueError("turn-zero neural history evidence must be null")
+        if expected:
+            if self.history_access == "own_previous_response":
+                if self.history_source_policy_id != self.policy_id:
+                    raise ValueError("own-history trace names another source policy")
+            elif self.history_source_policy_id == self.policy_id:
+                raise ValueError("matched-focal trace must name another source policy")
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class GitProvenance:
     """Exact source state bound into a run manifest."""
@@ -89,7 +141,12 @@ class PolicyRuntime:
     policy: ControlPolicy
     state_type: type[PolicyState]
     config_sha256: str
-    history_access: Literal["none", "own_previous_response"]
+    history_access: Literal[
+        "none",
+        "own_previous_response",
+        "matched_focal_previous_response",
+    ]
+    history_source_policy_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +240,21 @@ def _runtime_from_policy_spec(spec: PolicySpec) -> PolicyRuntime:
             config_sha256=canonical_sha256(spec),
             history_access=spec.history_access,
         )
+    if isinstance(spec, NeuralPersistentPolicySpec):
+        return PolicyRuntime(
+            policy=cast(ControlPolicy, NeuralPersistentPolicy(spec)),
+            state_type=NeuralPolicyState,
+            config_sha256=canonical_sha256(spec),
+            history_access=spec.history_access,
+        )
+    if isinstance(spec, NeuralMatchedHistoryStateResetPolicySpec):
+        return PolicyRuntime(
+            policy=cast(ControlPolicy, NeuralMatchedHistoryStateResetPolicy(spec)),
+            state_type=NeuralPolicyState,
+            config_sha256=canonical_sha256(spec),
+            history_access=spec.history_access,
+            history_source_policy_id=spec.history_source_policy_id,
+        )
     assert_never(spec)
 
 
@@ -198,6 +270,28 @@ def build_policy_runtimes(
         raise ValueError("policy specifications must not contain duplicate policy identifiers")
     if set(configured_policy_ids) != planned_policy_ids:
         raise ValueError("policy specifications do not exactly cover the experiment plan")
+    neural_specs = tuple(
+        spec
+        for spec in policy_specs
+        if isinstance(
+            spec,
+            (NeuralPersistentPolicySpec, NeuralMatchedHistoryStateResetPolicySpec),
+        )
+    )
+    if plan.evaluation is not None and neural_specs:
+        raise ValueError("neural policies are not admitted to Phase 3 efficacy evaluation")
+    reset_specs = tuple(
+        spec for spec in policy_specs if isinstance(spec, NeuralMatchedHistoryStateResetPolicySpec)
+    )
+    if reset_specs and not any(
+        isinstance(spec, NeuralPersistentPolicySpec) for spec in policy_specs
+    ):
+        raise ValueError("matched-history neural reset requires neural_persistent")
+    if reset_specs and set(configured_policy_ids) != {
+        "neural_persistent",
+        "neural_matched_history_state_reset",
+    }:
+        raise ValueError("Phase 4 requires exactly the two neural attribution policies")
     return {
         spec.policy_id: _runtime_from_policy_spec(spec)
         for spec in sorted(policy_specs, key=lambda item: item.policy_id)
@@ -234,6 +328,11 @@ def build_run_manifest(
             policy_id: runtime.config_sha256
             for policy_id, runtime in sorted(policy_runtimes.items())
         },
+        matched_history_policy_sources={
+            policy_id: runtime.history_source_policy_id
+            for policy_id, runtime in sorted(policy_runtimes.items())
+            if runtime.history_source_policy_id is not None
+        },
         metric_versions=plan.metric_versions,
         seed_schedule=SeedSchedule(
             model_seeds=tuple(sorted({turn.condition.model_seed for turn in plan.turns})),
@@ -247,18 +346,107 @@ def build_run_manifest(
     )
 
 
-def _trajectory_key(turn: PlannedTurn) -> tuple[object, ...]:
+def _trajectory_key(
+    turn: PlannedTurn,
+    *,
+    policy_id: str | None = None,
+) -> tuple[object, ...]:
     condition = turn.condition
     return (
         condition.experiment_id,
         condition.dataset_version,
         condition.prompt_sequence_id,
-        condition.policy_id,
+        condition.policy_id if policy_id is None else policy_id,
         condition.model_seed,
         condition.controller_seed,
         condition.provider_identity_id,
         condition.base_decoding_profile_id,
     )
+
+
+def _validate_causal_schedule(
+    plan: ExperimentPlan,
+    policy_runtimes: Mapping[str, PolicyRuntime],
+) -> None:
+    """Reject missing or forward causal edges before any provider dispatch."""
+
+    for policy_id, matched_runtime in policy_runtimes.items():
+        source_policy_id = matched_runtime.history_source_policy_id
+        if source_policy_id is None:
+            continue
+        source_coordinates = {
+            (_trajectory_key(turn), turn.condition.turn_index)
+            for turn in plan.turns
+            if turn.condition.policy_id == source_policy_id
+        }
+        matched_coordinates = {
+            (
+                _trajectory_key(turn, policy_id=source_policy_id),
+                turn.condition.turn_index,
+            )
+            for turn in plan.turns
+            if turn.condition.policy_id == policy_id
+        }
+        if source_coordinates != matched_coordinates:
+            raise ValueError("matched-history attribution arms must have exact paired coverage")
+
+    positions: dict[tuple[tuple[object, ...], int], int] = {}
+    turns_by_coordinate: dict[tuple[tuple[object, ...], int], PlannedTurn] = {}
+    for position, turn in enumerate(plan.turns):
+        coordinate = (_trajectory_key(turn), turn.condition.turn_index)
+        if coordinate in positions:
+            raise ValueError("experiment plan repeats a policy trajectory turn")
+        positions[coordinate] = position
+        turns_by_coordinate[coordinate] = turn
+    for position, turn in enumerate(plan.turns):
+        runtime = policy_runtimes.get(turn.condition.policy_id)
+        if runtime is None:
+            raise ValueError(f"no runtime for policy {turn.condition.policy_id!r}")
+        if runtime.history_source_policy_id is not None:
+            paired_coordinate = (
+                _trajectory_key(turn, policy_id=runtime.history_source_policy_id),
+                turn.condition.turn_index,
+            )
+            paired_turn = turns_by_coordinate.get(paired_coordinate)
+            paired_position = positions.get(paired_coordinate)
+            if paired_turn is None or paired_position is None:
+                raise ValueError("matched-history plan omits the paired focal current turn")
+            if paired_position >= position:
+                raise ValueError(
+                    "paired focal current turn must be scheduled before its reset pair"
+                )
+            current_inputs = (
+                turn.prompt_case_id,
+                turn.prompt_family,
+                turn.prompt_features,
+                turn.prompt,
+                turn.validator,
+                turn.decoding_parameters,
+            )
+            paired_inputs = (
+                paired_turn.prompt_case_id,
+                paired_turn.prompt_family,
+                paired_turn.prompt_features,
+                paired_turn.prompt,
+                paired_turn.validator,
+                paired_turn.decoding_parameters,
+            )
+            if current_inputs != paired_inputs:
+                raise ValueError(
+                    "matched-history attribution pairs must share exact current inputs"
+                )
+        if turn.condition.turn_index == 0:
+            continue
+        source_policy_id = runtime.history_source_policy_id or turn.condition.policy_id
+        predecessor = (
+            _trajectory_key(turn, policy_id=source_policy_id),
+            turn.condition.turn_index - 1,
+        )
+        predecessor_position = positions.get(predecessor)
+        if predecessor_position is None:
+            raise ValueError("experiment plan omits a declared causal predecessor")
+        if predecessor_position >= position:
+            raise ValueError("causal predecessor must be scheduled before its dependent turn")
 
 
 def _policy_decision(
@@ -270,8 +458,9 @@ def _policy_decision(
 ) -> tuple[
     GenerationRequest,
     PolicyState,
-    AppliedPolicyTrace | DetailedAppliedPolicyTrace,
+    AppliedPolicyTrace | DetailedAppliedPolicyTrace | CausalAppliedPolicyTrace,
 ]:
+    committed = None
     if previous_condition_id is None:
         if turn.condition.turn_index != 0:
             raise StoreInvariantError("nonzero plan turn has no immediate predecessor")
@@ -287,9 +476,7 @@ def _policy_decision(
         if turn.condition.turn_index == 0:
             raise StoreInvariantError("turn zero cannot bind previous history")
         committed = store.get_committed_history(previous_condition_id)
-        previous_metrics = (
-            committed.metrics if runtime.history_access == "own_previous_response" else None
-        )
+        previous_metrics = committed.metrics if runtime.history_access != "none" else None
         policy_state = store.load_policy_state(previous_condition_id, runtime.state_type)
 
     observation = ControllerObservation(
@@ -317,14 +504,47 @@ def _policy_decision(
         decoding_parameters=application.final_decoding_parameters,
         condition=turn.condition,
     )
-    trace: AppliedPolicyTrace | DetailedAppliedPolicyTrace
-    if plan.database_schema_version >= 2:
+    trace: AppliedPolicyTrace | DetailedAppliedPolicyTrace | CausalAppliedPolicyTrace
+    if isinstance(runtime.policy, SimulatedNeuralPolicy):
+        if runtime.history_access not in {
+            "own_previous_response",
+            "matched_focal_previous_response",
+        }:
+            raise ValueError("simulated neural policy requires response-history access")
+        neural_history_access = cast(
+            Literal[
+                "own_previous_response",
+                "matched_focal_previous_response",
+            ],
+            runtime.history_access,
+        )
+        trace = CausalAppliedPolicyTrace(
+            policy_id=proposed_trace.policy_id,
+            turn_index=proposed_trace.turn_index,
+            action=application.step_clamped_action,
+            action_application=application,
+            history_access=neural_history_access,
+            observation_has_previous_response=previous_metrics is not None,
+            history_source_policy_id=(None if committed is None else committed.condition.policy_id),
+            history_source_condition_id=(None if committed is None else committed.condition_id),
+            history_commitment_sha256=(
+                None if committed is None else committed.history_commitment_sha256
+            ),
+            observation_metrics_sha256=(
+                None if committed is None else canonical_sha256(committed.metrics)
+            ),
+            policy_trace=proposed_trace,
+        )
+    elif plan.database_schema_version >= 2:
+        if runtime.history_access == "matched_focal_previous_response":
+            raise ValueError("only simulated neural policies may use matched focal history")
+        detailed_history_access = runtime.history_access
         trace = DetailedAppliedPolicyTrace(
             policy_id=proposed_trace.policy_id,
             turn_index=proposed_trace.turn_index,
             action=application.step_clamped_action,
             action_application=application,
-            history_access=runtime.history_access,
+            history_access=detailed_history_access,
             observation_has_previous_response=previous_metrics is not None,
             policy_trace=proposed_trace,
         )
@@ -366,10 +586,11 @@ def execute_plan(
         )
     if not isinstance(database_path, Path):
         raise TypeError("database_path must be a pathlib.Path")
+    _validate_causal_schedule(plan, policy_runtimes)
 
     provider_calls = 0
     planned_ids = {turn.condition.condition_id for turn in plan.turns}
-    previous_by_trajectory: dict[tuple[object, ...], str] = {}
+    committed_by_coordinate: dict[tuple[tuple[object, ...], int], str] = {}
     with SQLiteRunStore(database_path, manifest) as store:
         store.verify_integrity()
         unknown_ids = {turn.condition_id for turn in store.list_turns()} - planned_ids
@@ -380,17 +601,27 @@ def execute_plan(
 
         for turn in plan.turns:
             condition_id = turn.condition.condition_id
-            trajectory = _trajectory_key(turn)
-            previous_condition_id = previous_by_trajectory.get(trajectory)
+            runtime = policy_runtimes.get(turn.condition.policy_id)
+            if runtime is None:
+                raise ValueError(f"no runtime for policy {turn.condition.policy_id!r}")
+            history_source_policy_id = runtime.history_source_policy_id or turn.condition.policy_id
+            history_trajectory = _trajectory_key(
+                turn,
+                policy_id=history_source_policy_id,
+            )
+            previous_condition_id = (
+                None
+                if turn.condition.turn_index == 0
+                else committed_by_coordinate.get(
+                    (history_trajectory, turn.condition.turn_index - 1)
+                )
+            )
             expected_previous_index = turn.condition.turn_index - 1
             if (previous_condition_id is None) != (turn.condition.turn_index == 0):
                 raise StoreInvariantError(
                     f"plan trajectory is missing turn {expected_previous_index} before "
                     f"{turn.condition.turn_index}"
                 )
-            runtime = policy_runtimes.get(turn.condition.policy_id)
-            if runtime is None:
-                raise ValueError(f"no runtime for policy {turn.condition.policy_id!r}")
             request, next_state, applied_trace = _policy_decision(
                 store,
                 turn,
@@ -482,7 +713,10 @@ def execute_plan(
                 if stored.policy_trace_json != canonical_json(applied_trace):
                     raise StoreInvariantError("committed policy trace does not reconstruct exactly")
 
-            previous_by_trajectory[trajectory] = condition_id
+            coordinate = (_trajectory_key(turn), turn.condition.turn_index)
+            if coordinate in committed_by_coordinate:
+                raise StoreInvariantError("plan repeats a policy trajectory turn")
+            committed_by_coordinate[coordinate] = condition_id
 
         store.verify_integrity()
         stored_turns = store.list_turns()
@@ -507,6 +741,7 @@ def execute_plan(
 
 __all__ = [
     "AppliedPolicyTrace",
+    "CausalAppliedPolicyTrace",
     "CheckpointHook",
     "DetailedAppliedPolicyTrace",
     "ExecutionSummary",

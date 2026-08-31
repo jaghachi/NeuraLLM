@@ -18,7 +18,11 @@ from pydantic import (
     model_validator,
 )
 
-from neurallm.control.specs import PolicySpec
+from neurallm.control.specs import (
+    NeuralMatchedHistoryStateResetPolicySpec,
+    NeuralPersistentPolicySpec,
+    PolicySpec,
+)
 from neurallm.domain.models import (
     ActionBounds,
     DecodingBounds,
@@ -292,10 +296,48 @@ class ExperimentConfig(_StrictFrozenModel):
             model_seeds=self.model_seeds,
             controller_seeds=self.controller_seeds,
         )
+        base = self.base_decoding_profile
+        bounds = self.decoding_bounds
+        if not (
+            bounds.temperature[0] <= base.temperature <= bounds.temperature[1]
+            and bounds.top_p[0] <= base.top_p <= bounds.top_p[1]
+            and bounds.top_k[0] <= base.top_k <= bounds.top_k[1]
+            and bounds.presence_penalty[0] <= base.presence_penalty <= bounds.presence_penalty[1]
+        ):
+            raise ValueError("base decoding profile exceeds the configured legal bounds")
         if self.policy_ids is None and self.policy_specs is None:
             raise ValueError("either legacy policy_ids or typed policy_specs are required")
         if self.policy_ids is not None and self.policy_specs is not None:
             raise ValueError("policy_ids and policy_specs are mutually exclusive")
+        matched_history_specs = tuple(
+            spec
+            for spec in (self.policy_specs or ())
+            if spec.history_access == "matched_focal_previous_response"
+        )
+        configured_policy_ids = set(self.configured_policy_ids)
+        neural_specs = tuple(
+            spec
+            for spec in (self.policy_specs or ())
+            if isinstance(
+                spec,
+                (NeuralPersistentPolicySpec, NeuralMatchedHistoryStateResetPolicySpec),
+            )
+        )
+        if neural_specs and self.evaluation is not None:
+            raise ValueError("neural policies are not admitted to Phase 3 efficacy evaluation")
+        for spec in matched_history_specs:
+            source_policy_id = getattr(spec, "history_source_policy_id", None)
+            if source_policy_id not in configured_policy_ids:
+                raise ValueError("matched-history policy requires its declared focal source policy")
+        if matched_history_specs:
+            phase4_policy_ids = {
+                "neural_persistent",
+                "neural_matched_history_state_reset",
+            }
+            if configured_policy_ids != phase4_policy_ids:
+                raise ValueError("Phase 4 requires exactly the two neural attribution policies")
+            if self.dataset.purpose is not DatasetPurpose.DEVELOPMENT:
+                raise ValueError("Phase 4 requires a pinned development-purpose dataset")
         if self.static_selection_record is not None:
             if self.development_selection_input is None:
                 raise ValueError("static selection record requires its declared development input")
