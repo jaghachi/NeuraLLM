@@ -2,15 +2,20 @@
 
 ## Status and purpose
 
-This living contract describes the NeuraLLM 2.0 architecture through Phase 4.
-The source tree reports version `2.0.0b1`. The current implementation preserves
-the Phase 2 experiment kernel and Phase 3 baseline evaluator, and adds one
-transparent five-state simulated neural mechanism with persistent and
-matched-focal-history substrate-reset roles. Phase 4 establishes deterministic
-controller activity and causal isolation under the fake provider. It is not
-evidence of live llama.cpp validity, neural benefit, a model-backed
-persistent-state effect, or a final scientific outcome, and it never populates
-`scientific_decision`.
+This living contract describes the NeuraLLM 2.0 architecture through the Phase
+5 offline-readiness boundary. The source tree reports version `2.0.0b1`. It
+preserves the Phase 2 experiment kernel, Phase 3 baseline evaluator, and Phase 4
+transparent five-state simulated neural mechanism, then adds the frozen Phase 5
+tier protocol, preregistration and provider preflight surfaces, durable logical-
+generation accounting, confirmatory analysis, atomic scientific persistence,
+and deterministic final reporting.
+
+Phase 4 establishes deterministic controller activity and causal isolation
+under the fake provider. The checked-in Phase 5 protocol, engineering fixture,
+sealed confirmatory dataset, and offline tests establish execution readiness
+only. No live llama.cpp smoke, pilot, or confirmatory run has occurred, so the
+repository's truthful state is `READY_FOR_LIVE_SMOKE`; it contains no observed
+model-backed benefit, persistent-state effect, or final scientific outcome.
 
 NeuraLLM asks one falsifiable question:
 
@@ -39,8 +44,8 @@ Production code is organized by domain, not by implementation phase.
 | `providers` | The common generation boundary, deterministic fake generation, and the strict llama.cpp adapter | Policy selection, metrics, retries, fallback routing |
 | `control` | Shared policy protocol, action bounds, static/random/heuristic baselines, and the composed simulated neural controller | Provider construction, experiment scheduling, evaluation decisions |
 | `metrics` | Deterministic validators and versioned output metrics | Controller state transitions or policy feedback routing |
-| `experiments` | Deterministic planning, matching, scheduling, execution, and resume orchestration | Policy-specific mode dispatch or statistical claims |
-| `evaluation` | Exact coverage, sequence-level aggregation, guardrails, paired statistics, and Phase 3 verdicts | Generation, mutation of source run evidence, or a Phase 5 scientific decision |
+| `experiments` | Deterministic planning, matching, scheduling, execution, resume, preregistration, and hash-bound analysis orchestration | Policy-specific mode dispatch, generation transport, or alternate decision rules |
+| `evaluation` | Exact coverage, sequence-level aggregation, guardrails, paired statistics, recovery, attribution, and typed Phase 3 and Phase 5 decisions | Generation or mutation of source run evidence |
 | `storage` | Transactional run and analysis persistence, manifests, integrity checks, and crash-safe resume | Scientific policy or retry decisions |
 | `reporting` | Compact, reproducible views derived from the canonical run store | Recomputing or changing scientific truth |
 | `cli` | Explicit composition root and command surface | Import-time clients, hidden defaults, or alternate scientific paths |
@@ -147,6 +152,14 @@ live-provider validity. Ollama compatibility is not part of the initial
 rebuild. An optional blinded judge, if later enabled, uses a separate explicit
 evaluation-provider identity and never becomes an implicit generation fallback.
 
+The live boundary has three explicit steps. First,
+`neurallm preflight --provider-config <path>` may inspect only the llama.cpp
+identity endpoints (`/health` and `/props`) and performs no generation. A live
+run is then authorized only when `neurallm run --config <path>` includes both
+`--execute` and `--allow-live-provider`. Preflight is not an execution gate by
+itself, either execution flag alone is insufficient, and no environment
+fallback supplies any of these choices.
+
 ## Domain and identity contracts
 
 Core boundaries use strict immutable models rather than untyped dictionaries.
@@ -158,11 +171,12 @@ Core boundaries use strict immutable models rather than untyped dictionaries.
 | `ControllerObservation` | Only the current turn index, prompt family, current prompt features, nullable prior-response metrics, and an explicit history-presence flag |
 | `ResponseMetrics` | Output measures whose entries carry value, availability, metric version, and input hash |
 | `ExperimentCondition` | Unique binding of experiment, dataset, prompt sequence, turn, policy, model seed, controller seed, provider identity, and base decoding profile |
-| `RunManifest` | Source, configuration, data, provider, policy, metric, seed, bounds, decision-rule, database-schema, optional declared matched-history source edge, and pre-execution Phase 3 analysis-contract identities |
+| `RunManifest` | Source and clean-tree provenance; configuration, data, provider, policy, metric, seed, bounds, decision rule, and database schema; the matched-history edge; and applicable pre-execution Phase 3 or Phase 5 identities |
 | `DatasetSeal` | Evaluation purpose, dataset ID/version, dataset SHA-256, and canonical seal identity |
 | `StaticSelectionRecord` | Development-only candidate grid, fixed `max_tokens`, canonical matched-unit keys, aligned score vectors, deterministic winner, and selection-result hash |
 | `EvaluationSpec` | Focal/comparator roles, aggregation and statistical methods, seeds, thresholds, and guardrail limits |
 | `AnalysisManifest` | Hash-bound connection between a finalized run, plan, evaluator input, static selection, dataset purpose, and seal |
+| `ScientificAnalysisManifest` | Hash-bound connection between one finalized confirmatory run, its preregistration, frozen confirmatory-analysis contract, sealed dataset, and evaluation result |
 
 Canonical scientific serialization is UTF-8 JSON with sorted keys, compact
 separators, and non-finite values rejected (`allow_nan = false`). Hashes are
@@ -275,6 +289,9 @@ One SQLite database is the canonical mutable record. The Phase 2 transaction,
 resume, and finalization behavior remains supported. Schema version 2 adds
 `turn_inputs`, `analysis_manifest`, `comparison_results`,
 `guardrail_results`, `analysis_decision`, and `analysis_finalization`.
+Discriminated typed records in those analysis tables support both the limited
+Phase 3 result and the Phase 5 confirmatory result without creating an alternate
+source of scientific truth.
 Prompt-side records are immutable once the run is finalized; comparison and
 guardrail rows are immutable once analysis is finalized. The analysis manifest
 binds the closed run, experiment plan, evaluator spec, development-only static
@@ -308,10 +325,12 @@ report.md
 
 The five non-database files are deterministic derived views. Phase 2 retains a
 header-only `comparisons.csv` and an engineering-only null decision. Finalized
-Phase 3 analysis emits deterministic comparison rows, a Phase 3 verdict and
-analysis identities in `decision.json`, and explicit evaluator, guardrail, and
-limitation sections in `report.md`. In both phases `scientific_decision` is
-null. The current exporter rejects every additional file, including plot
+Phase 3 analysis emits deterministic comparison rows and a limited Phase 3
+verdict while keeping `scientific_decision` null. Smoke and pilot exports also
+keep that field null. A claim-eligible finalized confirmatory analysis emits
+exactly three efficacy rows and one attribution-only row, the frozen final
+decision and evidence identities in `decision.json`, and the seven required
+report sections. The exporter rejects every additional file, including plot
 directories and per-turn request/response forests. `scientific_identity_sha256`
 covers canonical scientific inputs and excludes incidental timestamps and
 machine-local output paths.
@@ -339,9 +358,46 @@ components of a weighted score.
 Phase 3 results use only `superior`, `inferior`, `equivalent`,
 `inconclusive`, or `invalid` with claim scope
 `phase-3-statistical-behavior-only`. These validate the evaluator skeleton and
-baseline behavior. They are not the future Phase 5 states
+baseline behavior. They are not the final Phase 5 states
 `VALIDATED_POSITIVE`, `VALIDATED_NEGATIVE`, `INCONCLUSIVE`, or
 `INVALID_RUN`; `scientific_decision` remains null.
+
+## Model-backed protocol boundary
+
+Phase 5 freezes exactly five arms in this reporting order:
+
+1. `best_static`
+2. `random_matched`
+3. `heuristic_adaptive`
+4. `neural_persistent`
+5. `neural_matched_history_state_reset`
+
+The first four form the independent end-to-end efficacy population. The fifth
+is a matched-focal-history, state-reset intervention used only for
+persistent-state attribution; it must never enter efficacy estimates.
+
+The three frozen run tiers have exact request-accounting schedules:
+
+| Tier | Sequences | Turns per sequence | Model seeds | Controller seeds | Arms | Logical generations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Engineering smoke | 2 | 2 | 1 | 1 | 5 | 20 |
+| Development pilot | 6 | 4 | 2 | 1 | 5 | 240 |
+| Confirmatory | 24 | 4 | 5 | 1 | 5 | 2,400 |
+
+The engineering dataset is a 2-sequence by 2-turn development fixture with
+SHA-256
+`14c382a04acbe9394474f05cf84d8389833058afc2dc6feda21a023d46e45ef3`.
+The confirmatory dataset is a sealed 24-sequence by 4-turn evaluation fixture
+with SHA-256
+`7cf2d3a9fa35735aadc9186438277d2b5f6b7beb9f96e9fc9bbeb400da2b5d72`.
+
+Smoke and pilot runs validate engineering behavior and development choices;
+neither may make a scientific claim. Only a valid frozen confirmatory run may
+emit exactly one final state: `VALIDATED_POSITIVE`, `VALIDATED_NEGATIVE`,
+`INCONCLUSIVE`, or `INVALID_RUN`. Its report must keep seven distinct sections:
+engineering validity, controller activity, end-to-end efficacy,
+persistent-state attribution, guardrail outcomes, limitations, and final
+decision.
 
 ## Five phase boundaries
 
@@ -353,7 +409,7 @@ release gates; they are not runtime architecture.
 | 1. Clean foundation and contracts | Typed domain and protocol surfaces, canonical identities, fake provider, minimal CLI, zero-network tests, architecture documents | SQLite execution, resume, llama.cpp transport, scientific policies or results |
 | 2. Experiment kernel, storage, metrics, and llama.cpp | Complete provider-to-compact-artifact path, deterministic validators, strict llama.cpp, transaction/resume behavior | Comparator efficacy or neural claims |
 | 3. Baselines and statistical evaluator | Typed static, random, and heuristic comparators; development-only selection; sealed-data identity; exact matching; paired evaluator, guardrails, and durable decision skeleton | Live-provider validity, neural activity or benefit, persistent-state attribution, or a final scientific decision |
-| 4. Simulated neural controller and attribution (current) | One transparent persistent neural policy, causally clean matched-focal-history substrate reset, and fake-provider mechanism proof | Live/model-backed efficacy, beneficial persistent-state attribution, or a final scientific decision |
+| 4. Simulated neural controller and attribution | One transparent persistent neural policy, causally clean matched-focal-history substrate reset, and fake-provider mechanism proof | Live/model-backed efficacy, beneficial persistent-state attribution, or a final scientific decision |
 | 5. Model-backed evaluation and closeout | Smoke, development pilot, frozen confirmatory run, and one declared final decision | Opportunistic retuning after confirmatory execution |
 
 Work advances in order only after the current phase gate passes. No additional
@@ -370,7 +426,8 @@ generation retries, and direct controller control of generation length.
 
 Default tests perform no live HTTP or model calls. The live llama.cpp test
 requires the explicit `live` marker and a complete JSON payload; CLI model
-execution separately requires `run --execute`. Mocks can establish contract
+execution separately requires successful explicit preflight followed by both
+`run --execute` and `--allow-live-provider`. Mocks can establish contract
 behavior but never live-provider validity. If a machine-local llama.cpp runtime
 is unavailable after all code and preflight work is complete, the truthful state
 is `READY_FOR_LIVE_SMOKE`, not a fabricated live result.

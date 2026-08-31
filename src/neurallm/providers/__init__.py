@@ -26,6 +26,7 @@ from neurallm.providers.llama_cpp import (
     LlamaCppTransportError,
     llama_cpp_provider_identity,
 )
+from neurallm.providers.preflight import LlamaCppPreflightResult, preflight_llama_cpp
 
 __all__ = [
     "DECODING_FLOAT_ABSOLUTE_TOLERANCE",
@@ -44,8 +45,10 @@ __all__ = [
     "LlamaCppProvider",
     "LlamaCppProviderConfig",
     "LlamaCppProviderError",
+    "LlamaCppPreflightResult",
     "LlamaCppTransportError",
     "llama_cpp_provider_identity",
+    "preflight_llama_cpp",
     "ProviderIdentityMismatchError",
     "effective_parameters_match_request",
 ]

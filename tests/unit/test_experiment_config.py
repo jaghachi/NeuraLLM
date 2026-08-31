@@ -8,7 +8,14 @@ from pydantic import ValidationError
 from yaml.constructor import ConstructorError
 
 from neurallm.domain.models import ActionBounds, DecodingBounds
-from neurallm.experiments.config import ExperimentConfig, load_experiment_config
+from neurallm.evaluation.models import DatasetPurpose
+from neurallm.experiments.config import (
+    DatasetReference,
+    ExperimentConfig,
+    ProviderSelection,
+    load_experiment_config,
+)
+from neurallm.experiments.dataset import DatasetSeal
 from neurallm.metrics import METRIC_VERSIONS
 from neurallm.providers.fake import (
     FakeProvider,
@@ -127,3 +134,108 @@ def test_invalid_configuration_fails_closed(mutation: dict[str, object]) -> None
 
     with pytest.raises(ValidationError):
         ExperimentConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ("path", "version"))
+def test_dataset_reference_rejects_blank_identity_fields(field: str) -> None:
+    payload = {"path": "dataset.yaml", "version": "dataset-v1"}
+    payload[field] = " "
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        DatasetReference.model_validate(payload)
+
+
+def test_dataset_reference_phase_boundaries_fail_closed() -> None:
+    seal = DatasetSeal(
+        dataset_id="evaluation-v1",
+        dataset_version="evaluation-v1",
+        dataset_sha256="a" * 64,
+    )
+
+    with pytest.raises(ValidationError, match="legacy dataset reference"):
+        DatasetReference(
+            path="dataset.yaml",
+            version="dataset-v1",
+            expected_dataset_sha256="a" * 64,
+        )
+    with pytest.raises(ValidationError, match="requires expected_dataset_sha256"):
+        DatasetReference(
+            path="dataset.yaml",
+            version="dataset-v1",
+            purpose=DatasetPurpose.DEVELOPMENT,
+        )
+    with pytest.raises(ValidationError, match="only evaluation"):
+        DatasetReference(
+            path="dataset.yaml",
+            version="evaluation-v1",
+            purpose=DatasetPurpose.DEVELOPMENT,
+            expected_dataset_sha256="a" * 64,
+            seal=seal,
+        )
+
+
+def test_provider_selection_rejects_kind_path_and_effective_config_drift() -> None:
+    valid = config_payload()["provider"]
+    assert isinstance(valid, dict)
+    identity = FakeProvider().provider_identity
+
+    invalid_payloads = (
+        (
+            {
+                **valid,
+                "expected_identity": identity.model_copy(update={"provider_type": "llama_cpp"}),
+            },
+            "identity type",
+        ),
+        ({**valid, "config_path": "provider.yaml"}, "does not accept"),
+        (
+            {
+                **valid,
+                "kind": "llama_cpp",
+                "expected_identity": identity.model_copy(update={"provider_type": "llama_cpp"}),
+            },
+            "requires an explicit config_path",
+        ),
+        ({**valid, "expected_effective_configuration_json": "[]"}, "JSON object"),
+        (
+            {
+                **valid,
+                "expected_effective_configuration_json": (
+                    '{ "generation_method": "deterministic-hash-v1" }'
+                ),
+            },
+            "canonical JSON",
+        ),
+        ({**valid, "expected_effective_configuration_json": "{}"}, "provider_config_hash"),
+        ({**valid, "expected_effective_configuration_json": "{{"}, "finite canonical JSON"),
+    )
+    for payload, message in invalid_payloads:
+        with pytest.raises(ValidationError, match=message):
+            ProviderSelection.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ({"experiment_id": " "}, "must not be blank"),
+        ({"policy_ids": ["kernel_fixed", " "]}, "blank values"),
+        ({"policy_ids": ["kernel_fixed", "kernel_fixed"]}, "duplicates"),
+        ({"model_seeds": []}, "must not be empty"),
+        ({"metric_versions": {"task_score": " "}}, "must not be blank"),
+        ({"policy_ids": None}, "typed policy_specs are required"),
+    ),
+)
+def test_legacy_configuration_rejects_ambiguous_identity_and_schedule(
+    mutation: dict[str, object],
+    message: str,
+) -> None:
+    payload = config_payload()
+    payload.update(mutation)
+
+    with pytest.raises(ValidationError, match=message):
+        ExperimentConfig.model_validate(payload)
+
+
+def test_loader_requires_an_explicit_path_object() -> None:
+    with pytest.raises(TypeError, match="pathlib.Path"):
+        load_experiment_config("config.yaml")  # type: ignore[arg-type]

@@ -1,0 +1,100 @@
+# TEMPLATE ONLY: this file is intentionally not executable as checked in.
+# Run `neurallm preflight --provider-config configs/providers/llama_cpp.local.yaml`,
+# then paste every machine-local provider identity value and the exact canonical
+# effective-configuration JSON below. No config or scientific hash is claimed
+# for this template; those identities change when real preflight evidence is pasted.
+# Live execution remains separately gated by both `--execute` and
+# `--allow-live-provider`; this template never grants that authorization.
+schema_version: 1
+experiment_id: model-backed-live-smoke
+dataset:
+  path: ../../datasets/development/model-backed-engineering-smoke-v1.yaml
+  version: model-backed-engineering-smoke-v1
+  purpose: development
+  expected_dataset_sha256: 14c382a04acbe9394474f05cf84d8389833058afc2dc6feda21a023d46e45ef3
+provider:
+  kind: llama_cpp
+  config_path: ../providers/llama_cpp.local.yaml
+  expected_identity:
+    provider_type: llama_cpp
+    implementation_version: llama-cpp-completion-http-v1
+    model_alias: PASTE_PREFLIGHT_MODEL_ALIAS
+    build_id: PASTE_PREFLIGHT_BUILD_ID
+    provider_config_hash: 0000000000000000000000000000000000000000000000000000000000000000
+    model_path: C:/PASTE/PREFLIGHT/MODEL/PATH/model.gguf
+    model_sha256: null
+    chat_template_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+  expected_effective_configuration_json: '{"PASTE":"the exact canonical expected_effective_configuration_json from preflight"}'
+policy_specs:
+  - kind: best_static
+  - kind: heuristic_adaptive
+  - kind: neural_persistent
+  - kind: neural_matched_history_state_reset
+  - kind: random_matched
+protocol:
+  schema_version: 1
+  implementation_version: model-backed-experiment-protocol-v1
+  run_tier: engineering_smoke
+  schedule:
+    sequence_count: 2
+    turns_per_sequence: 2
+    model_seed_count: 1
+    controller_seed_count: 1
+    policy_count: 5
+    logical_generation_count: 20
+  policy_ids:
+    - best_static
+    - heuristic_adaptive
+    - neural_matched_history_state_reset
+    - neural_persistent
+    - random_matched
+  efficacy_policy_ids:
+    - best_static
+    - heuristic_adaptive
+    - neural_persistent
+    - random_matched
+  focal_policy_id: neural_persistent
+  required_serious_comparator_ids:
+    - best_static
+    - heuristic_adaptive
+  negative_control_policy_ids:
+    - random_matched
+  attribution:
+    policy_id: neural_matched_history_state_reset
+    history_source_policy_id: neural_persistent
+model_seeds:
+  - 4101
+controller_seeds:
+  - 5101
+base_decoding_profile_id: model-backed-balanced-v1
+base_decoding_profile:
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  presence_penalty: 0.0
+  max_tokens: 128
+action_bounds:
+  temperature_delta: [-0.1, 0.1]
+  top_p_delta: [-0.05, 0.05]
+  top_k_delta: [-10, 10]
+  presence_penalty_delta: [-0.2, 0.2]
+decoding_bounds:
+  temperature: [0.01, 2.0]
+  top_p: [0.01, 1.0]
+  top_k: [0, 200]
+  presence_penalty: [-2.0, 2.0]
+metric_versions:
+  distinct_2: distinct-2gram-unicode-nfkc-casefold-whitespace-v1
+  distinct_3: distinct-3gram-unicode-nfkc-casefold-whitespace-v1
+  format_validity: validator-v1
+  instruction_adherence: validator-v1
+  late_window_repetition_ratio: late-quarter-unicode-nfkc-casefold-whitespace-v1
+  repeated_3_gram_ratio: repeated-3gram-unicode-nfkc-casefold-whitespace-v1
+  repeated_4_gram_ratio: repeated-4gram-unicode-nfkc-casefold-whitespace-v1
+  repetition_ratio: token-repetition-unicode-nfkc-casefold-whitespace-v1
+  response_length_tokens: unicode-nfkc-casefold-whitespace-v1
+  semantic_similarity: semantic-unavailable-v1
+  task_score: validator-v1
+decision_rule_version: engineering-smoke-no-scientific-decision-v1
+database_schema_version: 2
+artifact_root: ../../runs/model-backed-live-smoke

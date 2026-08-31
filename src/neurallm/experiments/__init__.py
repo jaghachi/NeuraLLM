@@ -28,6 +28,11 @@ from neurallm.experiments.plan import (
     PlannedTurn,
     build_plan,
 )
+from neurallm.experiments.preregistration import (
+    PreregistrationPublication,
+    load_preregistration_seal,
+    publish_preregistration,
+)
 from neurallm.experiments.runner import (
     AppliedPolicyTrace,
     CausalAppliedPolicyTrace,
@@ -42,6 +47,7 @@ from neurallm.experiments.runner import (
     read_git_provenance,
 )
 from neurallm.experiments.workflow import (
+    LiveProviderAuthorizationError,
     PreparedExperiment,
     WorkflowExecutionSummary,
     construct_provider,
@@ -59,10 +65,12 @@ __all__ = [
     "ExperimentPlan",
     "ExecutionSummary",
     "GitProvenance",
+    "LiveProviderAuthorizationError",
     "LoadedDataset",
     "LoadedExperimentConfig",
     "PlannedTurn",
     "PolicyRuntime",
+    "PreregistrationPublication",
     "PHASE2_DECISION_RULE_VERSION",
     "PHASE3_DECISION_RULE_VERSION",
     "PHASE4_DECISION_RULE_VERSION",
@@ -84,6 +92,8 @@ __all__ = [
     "evaluation_records_from_store",
     "load_dataset",
     "load_experiment_config",
+    "load_preregistration_seal",
     "prepare_experiment",
+    "publish_preregistration",
     "read_git_provenance",
 ]

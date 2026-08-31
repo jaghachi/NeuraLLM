@@ -1,0 +1,59 @@
+schema_version: 1
+dataset_id: model-backed-engineering-smoke
+version: model-backed-engineering-smoke-v1
+purpose: development
+sequences:
+  - sequence_id: smoke-format-recovery
+    cases:
+      - case_id: smoke-format-recovery-0
+        prompt_family: mixed_transition
+        prompt: Return a JSON object with the keys observation, risk, and action for a queue backlog.
+        prompt_features:
+          constraint_count: 3.0
+          target_length: 64.0
+          transition_intensity: 0.0
+        validator:
+          kind: json_object
+          required_json_keys:
+            - observation
+            - risk
+            - action
+      - case_id: smoke-format-recovery-1
+        prompt_family: mixed_transition
+        prompt: Switch format and return exactly RECOVERED.
+        prompt_features:
+          constraint_count: 1.0
+          target_length: 1.0
+          transition_intensity: 1.0
+        validator:
+          kind: exact_match
+          expected_text: RECOVERED
+
+  - sequence_id: smoke-degeneracy-recovery
+    cases:
+      - case_id: smoke-degeneracy-recovery-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Explain a cache stampede in concise prose using the words burst, lock, and expiry without repeating a sentence.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 96.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - burst
+            - lock
+            - expiry
+      - case_id: smoke-degeneracy-recovery-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Give a fresh recovery checklist using the words jitter, capacity, and monitoring without repeating the prior conclusion.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.8
+          target_length: 96.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - jitter
+            - capacity
+            - monitoring

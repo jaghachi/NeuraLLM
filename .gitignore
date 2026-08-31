@@ -210,6 +210,7 @@ tempCodeRunnerFile.py
 .tmp/
 runs/
 artifacts/
+configs/**/*.local.yaml
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal

@@ -18,11 +18,14 @@ from neurallm.providers import (
     GenerationRequest,
     LlamaCppEffectiveConfiguration,
     LlamaCppIdentityDriftError,
+    LlamaCppPreflightResult,
     LlamaCppProtocolError,
     LlamaCppProvider,
     LlamaCppProviderConfig,
     LlamaCppTransportError,
     ProviderIdentityMismatchError,
+    llama_cpp_provider_identity,
+    preflight_llama_cpp,
 )
 
 _CHAT_TEMPLATE = "{% for message in messages %}{{ message.content }}{% endfor %}"
@@ -184,6 +187,64 @@ class _RecordingHandler:
 
 def _provider(handler: Callable[[httpx.Request], httpx.Response]) -> LlamaCppProvider:
     return LlamaCppProvider(_config(), transport=httpx.MockTransport(handler))
+
+
+def test_preflight_inspects_identity_only_and_never_dispatches_completion() -> None:
+    handler = _RecordingHandler()
+
+    result = preflight_llama_cpp(
+        _config(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert [(request.method, request.url.path) for request in handler.requests] == [
+        ("GET", "/health"),
+        ("GET", "/props"),
+    ]
+    assert handler.completion_dispatch_count == 0
+    assert result.provider_kind == "llama_cpp"
+    assert result.completion_requested is False
+    assert result.provider_identity_id == result.expected_identity.identity_id
+    effective = LlamaCppEffectiveConfiguration.model_validate_json(
+        result.expected_effective_configuration_json
+    )
+    assert result.expected_identity == llama_cpp_provider_identity(effective)
+    assert canonical_json(result) == canonical_json(result.model_copy(deep=True))
+
+
+def test_preflight_result_rejects_noncanonical_or_internally_inconsistent_evidence() -> None:
+    result = preflight_llama_cpp(
+        _config(),
+        transport=httpx.MockTransport(_RecordingHandler()),
+    )
+    payload = result.model_dump(mode="python")
+
+    effective = json.loads(result.expected_effective_configuration_json)
+    with pytest.raises(ValidationError, match="must be canonical JSON"):
+        LlamaCppPreflightResult.model_validate(
+            {
+                **payload,
+                "expected_effective_configuration_json": json.dumps(effective, indent=2),
+            }
+        )
+
+    with pytest.raises(ValidationError, match="disagrees with effective configuration"):
+        LlamaCppPreflightResult.model_validate(
+            {
+                **payload,
+                "expected_identity": result.expected_identity.model_copy(
+                    update={"build_id": "different-build"}
+                ),
+            }
+        )
+
+    with pytest.raises(ValidationError, match="identity ID disagrees"):
+        LlamaCppPreflightResult.model_validate({**payload, "provider_identity_id": "f" * 64})
+
+
+def test_preflight_rejects_an_untyped_provider_configuration_before_io() -> None:
+    with pytest.raises(TypeError, match="LlamaCppProviderConfig"):
+        preflight_llama_cpp(object())  # type: ignore[arg-type]
 
 
 def test_configuration_is_explicit_strict_and_validated() -> None:

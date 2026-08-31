@@ -45,19 +45,21 @@ from neurallm.domain.models import (
 )
 from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.experiments.plan import ExperimentPlan, PlannedTurn
+from neurallm.experiments.protocol import MODEL_BACKED_POLICY_IDS, RunTier
 from neurallm.metrics.base import MetricContext
 from neurallm.metrics.deterministic import compute_response_metrics
 from neurallm.providers.base import (
     GenerationProvider,
     GenerationRequest,
 )
-from neurallm.reporting.artifacts import scientific_result_sha256
 from neurallm.storage import (
+    DurableExecutionAccounting,
     ResumeAction,
     SQLiteRunStore,
     StoreInvariantError,
     TurnInputEvidence,
     TurnState,
+    scientific_result_sha256,
 )
 
 
@@ -154,6 +156,10 @@ class ExecutionSummary:
     """Counts and identities from one execution or safe resume."""
 
     planned_turns: int
+    previously_committed_turns: int
+    dispatched_this_invocation: int
+    successful_responses_this_invocation: int
+    uncertain_dispatches_this_invocation: int
     committed_turns: int
     provider_calls: int
     manifest_sha256: str
@@ -278,7 +284,7 @@ def build_policy_runtimes(
             (NeuralPersistentPolicySpec, NeuralMatchedHistoryStateResetPolicySpec),
         )
     )
-    if plan.evaluation is not None and neural_specs:
+    if plan.protocol is None and plan.evaluation is not None and neural_specs:
         raise ValueError("neural policies are not admitted to Phase 3 efficacy evaluation")
     reset_specs = tuple(
         spec for spec in policy_specs if isinstance(spec, NeuralMatchedHistoryStateResetPolicySpec)
@@ -287,11 +293,16 @@ def build_policy_runtimes(
         isinstance(spec, NeuralPersistentPolicySpec) for spec in policy_specs
     ):
         raise ValueError("matched-history neural reset requires neural_persistent")
-    if reset_specs and set(configured_policy_ids) != {
-        "neural_persistent",
-        "neural_matched_history_state_reset",
-    }:
-        raise ValueError("Phase 4 requires exactly the two neural attribution policies")
+    if reset_specs:
+        if plan.protocol is None and set(configured_policy_ids) != {
+            "neural_persistent",
+            "neural_matched_history_state_reset",
+        }:
+            raise ValueError("Phase 4 requires exactly the two neural attribution policies")
+        if plan.protocol is not None and tuple(sorted(configured_policy_ids)) != (
+            MODEL_BACKED_POLICY_IDS
+        ):
+            raise ValueError("model-backed execution requires the exact five policy runtimes")
     return {
         spec.policy_id: _runtime_from_policy_spec(spec)
         for spec in sorted(policy_specs, key=lambda item: item.policy_id)
@@ -312,10 +323,25 @@ def build_run_manifest(
     if set(policy_runtimes) != planned_policy_ids:
         raise ValueError("policy runtimes do not exactly cover the experiment plan")
     phase3_analysis_contract_sha256 = None
-    if plan.evaluation is not None:
+    confirmatory_analysis_contract_sha256 = None
+    if plan.protocol is None and plan.evaluation is not None:
         from neurallm.experiments.analysis import build_phase3_analysis_contract_sha256
 
         phase3_analysis_contract_sha256 = build_phase3_analysis_contract_sha256(plan)
+    if plan.protocol is not None and plan.protocol.run_tier is RunTier.CONFIRMATORY:
+        if provider_identity.provider_type != "llama_cpp":
+            raise ValueError("confirmatory execution requires the live llama_cpp provider")
+        from neurallm.experiments.scientific_analysis import (
+            build_confirmatory_analysis_contract_sha256,
+        )
+
+        confirmatory_analysis_contract_sha256 = build_confirmatory_analysis_contract_sha256(plan)
+    if (
+        plan.protocol is not None
+        and plan.protocol.run_tier is RunTier.CONFIRMATORY
+        and not provenance.working_tree_clean
+    ):
+        raise ValueError("confirmatory execution requires a clean source worktree")
     return RunManifest(
         source_commit=provenance.source_commit,
         working_tree_clean=provenance.working_tree_clean,
@@ -343,6 +369,14 @@ def build_run_manifest(
         decision_rule_version=plan.decision_rule_version,
         database_schema_version=plan.database_schema_version,
         phase3_analysis_contract_sha256=phase3_analysis_contract_sha256,
+        run_tier=(None if plan.protocol is None else plan.protocol.run_tier.value),
+        scientific_identity_sha256=(
+            None if plan.protocol is None else plan.scientific_identity_sha256
+        ),
+        preregistration_sha256=(
+            None if plan.preregistration is None else plan.preregistration.seal_sha256
+        ),
+        confirmatory_analysis_contract_sha256=(confirmatory_analysis_contract_sha256),
     )
 
 
@@ -589,10 +623,13 @@ def execute_plan(
     _validate_causal_schedule(plan, policy_runtimes)
 
     provider_calls = 0
+    dispatched_this_invocation = 0
+    uncertain_dispatches_this_invocation = 0
     planned_ids = {turn.condition.condition_id for turn in plan.turns}
     committed_by_coordinate: dict[tuple[tuple[object, ...], int], str] = {}
     with SQLiteRunStore(database_path, manifest) as store:
         store.verify_integrity()
+        previously_committed_turns = len(store.list_turns(TurnState.COMMITTED))
         unknown_ids = {turn.condition_id for turn in store.list_turns()} - planned_ids
         if unknown_ids:
             raise StoreInvariantError(
@@ -650,12 +687,14 @@ def execute_plan(
 
             if action is ResumeAction.DISPATCH_PREPARED:
                 store.begin_dispatch(condition_id)
+                dispatched_this_invocation += 1
                 if checkpoint_hook is not None:
                     checkpoint_hook(TurnState.DISPATCHING, turn)
                 try:
                     response = provider.generate(request)
                     provider_calls += 1
                 except Exception as exc:
+                    uncertain_dispatches_this_invocation += 1
                     store.mark_dispatch_uncertain(
                         condition_id,
                         f"{type(exc).__name__}: {exc}",
@@ -724,15 +763,31 @@ def execute_plan(
             turn.state is not TurnState.COMMITTED for turn in stored_turns
         ):
             raise StoreInvariantError("execution did not commit the complete planned schedule")
+        durable_accounting = (
+            None
+            if plan.protocol is None
+            else DurableExecutionAccounting(
+                planned_logical_generations=len(plan.turns),
+                dispatched_logical_generations=len(plan.turns),
+                successful_responses=len(plan.turns),
+                uncertain_dispatches=0,
+                committed_logical_generations=len(plan.turns),
+            )
+        )
         finalization = store.finalize_run(
             tuple(planned_ids),
             scientific_result_sha256(stored_turns),
+            durable_accounting,
         )
         store.verify_integrity()
         store.compact()
 
     return ExecutionSummary(
         planned_turns=len(plan.turns),
+        previously_committed_turns=previously_committed_turns,
+        dispatched_this_invocation=dispatched_this_invocation,
+        successful_responses_this_invocation=provider_calls,
+        uncertain_dispatches_this_invocation=uncertain_dispatches_this_invocation,
         committed_turns=len(plan.turns),
         provider_calls=provider_calls,
         manifest_sha256=finalization.manifest_sha256,

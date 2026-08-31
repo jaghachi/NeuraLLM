@@ -1,0 +1,94 @@
+# Offline engineering proof. The fake provider exercises the complete five-arm
+# lifecycle but cannot support a model-backed efficacy or attribution claim.
+schema_version: 1
+experiment_id: model-backed-engineering-smoke-offline
+dataset:
+  path: ../../datasets/development/model-backed-engineering-smoke-v1.yaml
+  version: model-backed-engineering-smoke-v1
+  purpose: development
+  expected_dataset_sha256: 14c382a04acbe9394474f05cf84d8389833058afc2dc6feda21a023d46e45ef3
+provider:
+  kind: fake
+  expected_identity:
+    provider_type: fake
+    implementation_version: 2.0.0
+    model_alias: deterministic-fake
+    build_id: builtin
+    provider_config_hash: 62dd2cef1f89c1ba05ecef467ecd094c6ed2107f30a303ab81e2a7eef2dcf8f7
+    model_path: null
+    model_sha256: null
+    chat_template_sha256: null
+  expected_effective_configuration_json: '{"generation_method":"fake_provider_visible_sha256_v2","implementation_version":"2.0.0","provider_type":"fake"}'
+policy_specs:
+  - kind: best_static
+  - kind: heuristic_adaptive
+  - kind: neural_persistent
+  - kind: neural_matched_history_state_reset
+  - kind: random_matched
+protocol:
+  schema_version: 1
+  implementation_version: model-backed-experiment-protocol-v1
+  run_tier: engineering_smoke
+  schedule:
+    sequence_count: 2
+    turns_per_sequence: 2
+    model_seed_count: 1
+    controller_seed_count: 1
+    policy_count: 5
+    logical_generation_count: 20
+  policy_ids:
+    - best_static
+    - heuristic_adaptive
+    - neural_matched_history_state_reset
+    - neural_persistent
+    - random_matched
+  efficacy_policy_ids:
+    - best_static
+    - heuristic_adaptive
+    - neural_persistent
+    - random_matched
+  focal_policy_id: neural_persistent
+  required_serious_comparator_ids:
+    - best_static
+    - heuristic_adaptive
+  negative_control_policy_ids:
+    - random_matched
+  attribution:
+    policy_id: neural_matched_history_state_reset
+    history_source_policy_id: neural_persistent
+model_seeds:
+  - 4101
+controller_seeds:
+  - 5101
+base_decoding_profile_id: model-backed-balanced-v1
+base_decoding_profile:
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  presence_penalty: 0.0
+  max_tokens: 128
+action_bounds:
+  temperature_delta: [-0.1, 0.1]
+  top_p_delta: [-0.05, 0.05]
+  top_k_delta: [-10, 10]
+  presence_penalty_delta: [-0.2, 0.2]
+decoding_bounds:
+  temperature: [0.01, 2.0]
+  top_p: [0.01, 1.0]
+  top_k: [0, 200]
+  presence_penalty: [-2.0, 2.0]
+metric_versions:
+  distinct_2: distinct-2gram-unicode-nfkc-casefold-whitespace-v1
+  distinct_3: distinct-3gram-unicode-nfkc-casefold-whitespace-v1
+  format_validity: validator-v1
+  instruction_adherence: validator-v1
+  late_window_repetition_ratio: late-quarter-unicode-nfkc-casefold-whitespace-v1
+  repeated_3_gram_ratio: repeated-3gram-unicode-nfkc-casefold-whitespace-v1
+  repeated_4_gram_ratio: repeated-4gram-unicode-nfkc-casefold-whitespace-v1
+  repetition_ratio: token-repetition-unicode-nfkc-casefold-whitespace-v1
+  response_length_tokens: unicode-nfkc-casefold-whitespace-v1
+  semantic_similarity: semantic-unavailable-v1
+  task_score: validator-v1
+decision_rule_version: engineering-smoke-no-scientific-decision-v1
+database_schema_version: 2
+artifact_root: ../../runs/model-backed-engineering-smoke-offline

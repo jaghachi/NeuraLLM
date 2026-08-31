@@ -60,6 +60,18 @@ UnitInterval = Annotated[
 _PHASE4_MATCHED_HISTORY_POLICY_SOURCES = {
     "neural_matched_history_state_reset": "neural_persistent",
 }
+_MODEL_BACKED_POLICY_IDS = {
+    "best_static",
+    "heuristic_adaptive",
+    "neural_matched_history_state_reset",
+    "neural_persistent",
+    "random_matched",
+}
+_MODEL_BACKED_RULE_TIERS = {
+    "engineering-smoke-no-scientific-decision-v1": "engineering_smoke",
+    "development-pilot-no-scientific-decision-v1": "development_pilot",
+    "confirmatory-scientific-decision-v1": "confirmatory",
+}
 
 
 class StrictFrozenModel(BaseModel):
@@ -331,6 +343,22 @@ class RunManifest(StrictFrozenModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    run_tier: NonEmptyString | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    scientific_identity_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    preregistration_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    confirmatory_analysis_contract_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("policy_config_hashes", "metric_versions")
     @classmethod
@@ -367,18 +395,46 @@ class RunManifest(StrictFrozenModel):
     @model_validator(mode="after")
     def _validate_provider_config_hash(self) -> Self:
         configured_policies = set(self.policy_config_hashes)
-        if self.matched_history_policy_sources and (
-            dict(self.matched_history_policy_sources) != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES
-        ):
-            raise ValueError("manifest permits only the Phase 4 matched-history policy edge")
+        matched_sources = dict(self.matched_history_policy_sources)
+        if matched_sources and matched_sources != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES:
+            raise ValueError("manifest permits only the frozen matched-history policy edge")
         phase4 = self.decision_rule_version == "phase4-neural-mechanism-only-v1"
-        if phase4 != bool(self.matched_history_policy_sources):
-            raise ValueError("Phase 4 decision rule and matched-history edge must appear together")
+        model_backed_tier = _MODEL_BACKED_RULE_TIERS.get(self.decision_rule_version)
+        has_attribution_edge = bool(self.matched_history_policy_sources)
+        if phase4 and not has_attribution_edge:
+            raise ValueError("Phase 4 decision rule requires its matched-history edge")
+        if not phase4 and model_backed_tier is None and has_attribution_edge:
+            raise ValueError("matched-history edge requires a causal attribution protocol")
         if phase4 and configured_policies != {
             "neural_persistent",
             "neural_matched_history_state_reset",
         }:
             raise ValueError("Phase 4 manifest requires exactly the two neural policies")
+        if model_backed_tier is not None:
+            if not has_attribution_edge or configured_policies != _MODEL_BACKED_POLICY_IDS:
+                raise ValueError(
+                    "model-backed manifest requires the exact five policies and attribution edge"
+                )
+            if self.run_tier != model_backed_tier:
+                raise ValueError("model-backed run tier does not match its decision rule")
+            if self.scientific_identity_sha256 is None:
+                raise ValueError("model-backed manifest requires the frozen scientific identity")
+            confirmatory = model_backed_tier == "confirmatory"
+            if confirmatory != (self.preregistration_sha256 is not None):
+                raise ValueError(
+                    "confirmatory manifest and preregistration identity must appear together"
+                )
+            if confirmatory != (self.confirmatory_analysis_contract_sha256 is not None):
+                raise ValueError(
+                    "confirmatory manifest and final analysis contract must appear together"
+                )
+        elif (
+            self.run_tier is not None
+            or self.scientific_identity_sha256 is not None
+            or self.preregistration_sha256 is not None
+            or self.confirmatory_analysis_contract_sha256 is not None
+        ):
+            raise ValueError("only model-backed manifests may carry protocol identities")
         for policy_id, source_policy_id in self.matched_history_policy_sources.items():
             if policy_id == source_policy_id:
                 raise ValueError("matched history source must name another policy")

@@ -494,7 +494,7 @@ def test_evaluation_record_reconstruction_fails_closed(
             evaluation_records_from_store(plan, store)
 
 
-def test_evaluation_record_preserves_explicit_metric_unavailability(
+def test_evaluation_record_rejects_unreconstructable_metric_unavailability(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -514,10 +514,8 @@ def test_evaluation_record_preserves_explicit_metric_unavailability(
     monkeypatch.setattr(SQLiteRunStore, "list_turns", lambda _store: (turn,))
     monkeypatch.setattr(SQLiteRunStore, "list_turn_inputs", lambda _store: (evidence,))
     with SQLiteRunStore(tmp_path / "unavailable.sqlite3") as store:
-        records = evaluation_records_from_store(plan, store)
-
-    assert records[0].task_score is None
-    assert records[0].required_metrics_available is False
+        with pytest.raises(StoreInvariantError, match="do not reconstruct exactly"):
+            evaluation_records_from_store(plan, store)
 
 
 def test_analysis_manifest_enforces_dataset_and_evidence_identities() -> None:

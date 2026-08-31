@@ -73,8 +73,16 @@ def test_fake_plan_executes_end_to_end_and_committed_replay_makes_zero_calls(
     repeated = execute_plan(plan, manifest, provider, runtimes, database_path)
 
     assert first.planned_turns == 3
+    assert first.previously_committed_turns == 0
+    assert first.dispatched_this_invocation == 3
+    assert first.successful_responses_this_invocation == 3
+    assert first.uncertain_dispatches_this_invocation == 0
     assert first.committed_turns == 3
     assert first.provider_calls == 3
+    assert repeated.previously_committed_turns == 3
+    assert repeated.dispatched_this_invocation == 0
+    assert repeated.successful_responses_this_invocation == 0
+    assert repeated.uncertain_dispatches_this_invocation == 0
     assert repeated.provider_calls == 0
     assert repeated.manifest_sha256 == first.manifest_sha256
     assert provider.calls == 3
@@ -151,6 +159,10 @@ def test_resume_after_persisted_response_never_regenerates_that_turn(tmp_path: P
     resumed = execute_plan(plan, manifest, provider, runtimes, database_path)
 
     assert resumed.provider_calls == 2
+    assert resumed.previously_committed_turns == 0
+    assert resumed.dispatched_this_invocation == 2
+    assert resumed.successful_responses_this_invocation == 2
+    assert resumed.uncertain_dispatches_this_invocation == 0
     assert provider.calls == 3
     with SQLiteRunStore(database_path) as store:
         assert len(store.list_turns(TurnState.COMMITTED)) == 3

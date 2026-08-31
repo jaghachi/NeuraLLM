@@ -16,6 +16,11 @@ from neurallm.domain.models import (
     Sha256Hex,
 )
 from neurallm.domain.serialization import canonical_sha256
+from neurallm.evaluation.attribution import PersistentStateAttributionResult
+from neurallm.evaluation.confirmatory import (
+    ConfirmatoryAnalysisSpec,
+    ConfirmatoryEvaluationResult,
+)
 from neurallm.evaluation.models import (
     DatasetPurpose,
     EvaluationSpec,
@@ -23,6 +28,10 @@ from neurallm.evaluation.models import (
     GuardrailResult,
     PairwiseComparisonResult,
     Phase3EvaluationResult,
+)
+from neurallm.evaluation.scientific import (
+    EfficacyComparisonResult,
+    ScientificGuardrailResult,
 )
 from neurallm.evaluation.selection import StaticSelectionRecord
 from neurallm.metrics.validators import ValidatorSpec
@@ -70,6 +79,34 @@ class TurnInputEvidence(BaseModel):
     validator: ValidatorSpec
 
 
+class DurableExecutionAccounting(BaseModel):
+    """Run-total logical-generation accounting persisted at successful closeout."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    planned_logical_generations: int = Field(ge=1)
+    dispatched_logical_generations: int = Field(ge=0)
+    successful_responses: int = Field(ge=0)
+    uncertain_dispatches: int = Field(ge=0)
+    committed_logical_generations: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_accounting(self) -> Self:
+        """Require mutually intelligible counts without inventing transport retries."""
+
+        if self.dispatched_logical_generations != (
+            self.successful_responses + self.uncertain_dispatches
+        ):
+            raise ValueError(
+                "dispatched logical generations must equal successful plus uncertain dispatches"
+            )
+        if self.committed_logical_generations > self.successful_responses:
+            raise ValueError("committed logical generations cannot exceed successful responses")
+        if self.dispatched_logical_generations > self.planned_logical_generations:
+            raise ValueError("dispatched logical generations cannot exceed the frozen plan")
+        return self
+
+
 class RunFinalization(BaseModel):
     """Canonical, immutable evidence that one complete run schedule is closed."""
 
@@ -79,6 +116,10 @@ class RunFinalization(BaseModel):
     expected_condition_count: int
     manifest_sha256: Sha256Hex
     scientific_result_sha256: Sha256Hex
+    execution_accounting: DurableExecutionAccounting | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def validate_schedule_identity(self) -> Self:
@@ -90,6 +131,18 @@ class RunFinalization(BaseModel):
             raise ValueError("finalized condition IDs must be sorted and unique")
         if self.expected_condition_count != len(self.expected_condition_ids):
             raise ValueError("finalized condition count must equal the condition ID count")
+        if self.execution_accounting is not None:
+            accounting = self.execution_accounting
+            if accounting.planned_logical_generations != self.expected_condition_count:
+                raise ValueError("execution accounting must cover the finalized schedule")
+            if accounting.committed_logical_generations != self.expected_condition_count:
+                raise ValueError("successful closeout accounting must mark every turn committed")
+            if accounting.successful_responses != self.expected_condition_count:
+                raise ValueError("successful closeout accounting must bind one response per turn")
+            if accounting.uncertain_dispatches != 0:
+                raise ValueError(
+                    "successful closeout accounting cannot contain uncertain dispatches"
+                )
         return self
 
 
@@ -189,6 +242,99 @@ class AnalysisFinalization(BaseModel):
         return self
 
 
+class ScientificAnalysisManifest(BaseModel):
+    """Immutable binding between one closed confirmatory run and its inputs."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        validate_default=True,
+    )
+
+    schema_version: Literal[1] = 1
+    implementation_version: Literal["confirmatory-scientific-analysis-storage-v1"] = (
+        "confirmatory-scientific-analysis-storage-v1"
+    )
+    claim_eligible: Literal[True] = True
+    causal_mechanism_validated: Literal[True] = True
+    run_manifest_sha256: Sha256Hex
+    run_finalization_sha256: Sha256Hex
+    scientific_result_sha256: Sha256Hex
+    scientific_identity_sha256: Sha256Hex
+    preregistration_sha256: Sha256Hex
+    confirmatory_analysis_contract_sha256: Sha256Hex
+    confirmatory_analysis_spec: ConfirmatoryAnalysisSpec
+    confirmatory_analysis_spec_sha256: Sha256Hex
+    dataset_sha256: Sha256Hex
+    dataset_purpose: DatasetPurpose = DatasetPurpose.EVALUATION
+    dataset_seal_sha256: Sha256Hex
+    evaluation_input_sha256: Sha256Hex
+
+    @field_validator("dataset_purpose", mode="before")
+    @classmethod
+    def _accept_serialized_dataset_purpose(cls, value: object) -> object:
+        if isinstance(value, str):
+            return DatasetPurpose(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_confirmatory_contract(self) -> Self:
+        """Require sealed evaluation data and exact analysis-spec identity."""
+
+        if self.dataset_purpose is not DatasetPurpose.EVALUATION:
+            raise ValueError("scientific analysis requires evaluation-purpose data")
+        if self.confirmatory_analysis_spec_sha256 != canonical_sha256(
+            self.confirmatory_analysis_spec
+        ):
+            raise ValueError(
+                "confirmatory analysis spec hash does not match its canonical evidence"
+            )
+        return self
+
+
+class ScientificAnalysisFinalization(BaseModel):
+    """Canonical closure over one complete persisted confirmatory evaluation."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        validate_default=True,
+    )
+
+    schema_version: Literal[1] = 1
+    implementation_version: Literal["confirmatory-scientific-analysis-finalization-v1"] = (
+        "confirmatory-scientific-analysis-finalization-v1"
+    )
+    analysis_manifest_sha256: Sha256Hex
+    evaluation_result_sha256: Sha256Hex
+    decision_sha256: Sha256Hex
+    comparison_result_sha256s: tuple[Sha256Hex, ...]
+    guardrail_result_sha256s: tuple[Sha256Hex, ...]
+    efficacy_comparison_count: Literal[3] = 3
+    attribution_comparison_count: Literal[1] = 1
+    comparison_count: Literal[4] = 4
+    guardrail_count: int = Field(ge=0)
+
+    @field_validator("comparison_result_sha256s", "guardrail_result_sha256s")
+    @classmethod
+    def validate_sorted_unique_hashes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if values != tuple(sorted(set(values))):
+            raise ValueError("scientific analysis evidence hashes must be sorted and unique")
+        return values
+
+    @model_validator(mode="after")
+    def validate_evidence_counts(self) -> Self:
+        if len(self.comparison_result_sha256s) != self.comparison_count:
+            raise ValueError(
+                "scientific comparison count must cover three efficacy plus attribution"
+            )
+        if self.guardrail_count != len(self.guardrail_result_sha256s):
+            raise ValueError("scientific guardrail count must equal the persisted guardrail hashes")
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class StoredTurn:
     """Validated materialized view of one turn in the canonical store."""
@@ -233,15 +379,31 @@ class StoredAnalysis:
     finalization: AnalysisFinalization
 
 
+@dataclass(frozen=True, slots=True)
+class StoredScientificAnalysis:
+    """Hash-validated materialized view of one confirmatory scientific analysis."""
+
+    manifest: ScientificAnalysisManifest
+    result: ConfirmatoryEvaluationResult
+    efficacy_comparisons: tuple[EfficacyComparisonResult, ...]
+    attribution: PersistentStateAttributionResult
+    guardrails: tuple[ScientificGuardrailResult, ...]
+    finalization: ScientificAnalysisFinalization
+
+
 __all__ = [
     "AnalysisFinalization",
     "AnalysisManifest",
     "CommittedHistory",
+    "DurableExecutionAccounting",
     "HistoryBinding",
     "ResumeAction",
     "RunFinalization",
+    "ScientificAnalysisFinalization",
+    "ScientificAnalysisManifest",
     "StoredTurn",
     "StoredAnalysis",
+    "StoredScientificAnalysis",
     "TurnInputEvidence",
     "TurnState",
 ]

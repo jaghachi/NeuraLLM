@@ -1,4 +1,4 @@
-# Metric and Phase 3 evaluator definitions
+# Metric and evaluator definitions
 
 ## Claim boundary
 
@@ -9,10 +9,65 @@ guardrails, and a limited verdict skeleton. The checked-in Phase 3 evaluator
 fixtures use the fake provider and contain no neural policy; the separate Phase
 4 causal harness does not enter this evaluator.
 
-These definitions do not establish live-provider validity, neural efficacy,
-model-backed efficacy, or persistent-state attribution. A Phase 3 verdict has
-claim scope `phase-3-statistical-behavior-only`; `scientific_decision` remains
-`null`.
+Those Phase 3 definitions do not establish live-provider validity, neural
+efficacy, model-backed efficacy, or persistent-state attribution. A Phase 3
+verdict has claim scope `phase-3-statistical-behavior-only`;
+`scientific_decision` remains `null`. The separate Phase 5 evaluator and final
+decision contracts are implemented, but checked-in code and offline fixtures do
+not constitute an observed live or confirmatory result.
+
+## Model-backed metric and claim boundary
+
+Phase 5 uses exactly five arms. The first four in the declared reporting order
+(`best_static`, `random_matched`, `heuristic_adaptive`, and
+`neural_persistent`) form the independent efficacy population.
+`neural_matched_history_state_reset` is the fifth arm and contributes only to
+persistent-state attribution; its dependent matched-history responses must not
+enter end-to-end efficacy estimates.
+
+Metric coverage must account for the full frozen schedule before analysis:
+
+| Tier | Exact schedule | Logical generations | Permitted interpretation |
+| --- | --- | ---: | --- |
+| Engineering smoke | 2 sequences x 2 turns x 1 model seed x 1 controller seed x 5 arms | 20 | Engineering validation only; no scientific claim |
+| Development pilot | 6 sequences x 4 turns x 2 model seeds x 1 controller seed x 5 arms | 240 | Development calibration only; no scientific claim |
+| Confirmatory | 24 sequences x 4 turns x 5 model seeds x 1 controller seed x 5 arms | 2,400 | One final decision only after all identity, coverage, provenance, and guardrail checks pass |
+
+No model-backed metric evidence exists merely because a dataset or report
+schema exists. Live evidence requires explicit no-generation provider
+preflight, followed by both execution gates, `--execute` and
+`--allow-live-provider`; default tests and fake-provider runs remain
+zero-network evidence.
+
+## Confirmatory endpoints and frozen analysis
+
+The confirmatory primary endpoint is `guardrail_clean_task_score`. It preserves
+the raw `task_score` for audit and exposes the same unmodified value for pairing
+only when every declared gate passes. A failed or invalid gate makes the gated
+value unavailable; the evaluator never substitutes zero, drops the unit, or
+blends guardrail values into a weighted score.
+
+End-to-end efficacy uses `neural_persistent` minus each of `best_static`,
+`heuristic_adaptive`, and `random_matched` at the prompt-sequence by model-seed
+unit. The first two are the exact Holm family; `random_matched` is reported as a
+negative control. The frozen confirmatory defaults are 10,000 paired-bootstrap
+resamples, 10,000 sign-flip resamples, 95% confidence, a `0.02` practical-effect
+threshold, maximum adherence regression `0.01`, maximum length reduction
+`0.05`, maximum action-saturation rate `0.05`, and exact matched coverage `1.0`.
+
+Recovery is evaluated separately with exactly these three measures:
+
+- `post_stressor_task_score_change`;
+- `post_stressor_repetition_change`; and
+- `time_to_return_to_target_band`.
+
+Failure to return inside the preregistered window is represented as
+right-censored at window length plus one and counted explicitly. Persistent-
+state attribution pairs `neural_persistent` with
+`neural_matched_history_state_reset`, excludes turn zero from the effect, and
+never enters the efficacy or Holm populations. Optional-metric missingness and
+oppositely resolved `prompt_family` subgroup effects are recorded as typed
+limitations with their preregistered disposition before the final decision.
 
 ## Response-level provenance
 
@@ -267,3 +322,10 @@ alias and guardrail summaries, and pair verdicts. `decision.json` and
 Historical Phase 2 behavior is unchanged: `comparisons.csv` is header-only and
 `decision.json` uses `engineering_validation_only` scope with a null
 scientific decision.
+
+The final confirmatory report must keep `engineering validity`, `controller
+activity`, `end-to-end efficacy`, `persistent-state attribution`, `guardrail
+outcomes`, `limitations`, and `final decision` as distinct sections. The final
+decision field accepts exactly `VALIDATED_POSITIVE`, `VALIDATED_NEGATIVE`,
+`INCONCLUSIVE`, or `INVALID_RUN`. Smoke and pilot metrics can never populate
+that field.

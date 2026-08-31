@@ -1,4 +1,4 @@
-"""Explicit, machine-readable NeuraLLM Phase 3 command-line interface."""
+"""Explicit, machine-readable NeuraLLM command-line interface."""
 
 from __future__ import annotations
 
@@ -9,11 +9,15 @@ from pathlib import Path
 
 from neurallm import __version__
 from neurallm.domain.serialization import canonical_json
+from neurallm.experiments.preregistration import publish_preregistration
 from neurallm.experiments.workflow import (
+    LiveProviderAuthorizationError,
     PreparedExperiment,
     execute_prepared,
     prepare_experiment,
 )
+from neurallm.experiments.yaml_loader import load_yaml_mapping
+from neurallm.providers import LlamaCppProviderConfig, preflight_llama_cpp
 from neurallm.reporting import CLOSED_RUN_ARTIFACTS, export_closed_run
 
 
@@ -35,6 +39,29 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status", help="print implementation and scientific status")
 
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="inspect one explicit llama.cpp identity without requesting a completion",
+    )
+    preflight.add_argument(
+        "--provider-config",
+        type=Path,
+        required=True,
+        help="explicit machine-local llama.cpp provider YAML path",
+    )
+
+    preregister = subparsers.add_parser(
+        "preregister",
+        help="publish a frozen confirmatory identity without constructing a provider",
+    )
+    _add_config_argument(preregister)
+    preregister.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="explicit canonical JSON preregistration seal output path",
+    )
+
     validate = subparsers.add_parser("validate", help="validate config, dataset, and contracts")
     _add_config_argument(validate)
     plan = subparsers.add_parser("plan", help="print the complete deterministic schedule")
@@ -55,6 +82,14 @@ def _build_parser() -> argparse.ArgumentParser:
         const="execute",
         dest="run_mode",
         help="construct the selected provider and execute exactly once per pending turn",
+    )
+    run.add_argument(
+        "--allow-live-provider",
+        action="store_true",
+        help=(
+            "additionally authorize llama.cpp network inspection and completion dispatch; "
+            "not required for the fake provider"
+        ),
     )
 
     analyze = subparsers.add_parser("analyze", help="verify and derive closed-run artifacts")
@@ -112,11 +147,57 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "package": "neurallm",
                     "version": __version__,
-                    "implementation_phase": 3,
+                    "implementation_phase": 5,
                     "phase_2_kernel_available": True,
                     "phase_3_baseline_evaluator_available": True,
+                    "phase_4_causal_attribution_available": True,
+                    "model_backed_protocol_available": True,
+                    "confirmatory_decision_engine_available": True,
+                    "offline_engineering_smoke_config": (
+                        "configs/experiments/model-backed-engineering-smoke.yaml"
+                    ),
+                    "live_smoke_template": (
+                        "configs/experiments/model-backed-live-smoke.example.yaml"
+                    ),
+                    "readiness": "READY_FOR_LIVE_SMOKE",
                     "scientific_decision": None,
                     "live_provider_validated": False,
+                    "live_smoke_completed": False,
+                    "confirmatory_run_completed": False,
+                }
+            )
+            return 0
+
+        if args.command == "preflight":
+            provider_config_path = args.provider_config.expanduser().resolve(strict=True)
+            provider_config = LlamaCppProviderConfig.model_validate(
+                load_yaml_mapping(provider_config_path)
+            )
+            preflight = preflight_llama_cpp(provider_config)
+            _print(
+                {
+                    "command": "preflight",
+                    "provider_config_path": str(provider_config_path),
+                    **preflight.model_dump(mode="json"),
+                }
+            )
+            return 0
+
+        if args.command == "preregister":
+            publication = publish_preregistration(args.config, args.output)
+            _print(
+                {
+                    "command": "preregister",
+                    "config_path": str(publication.config_path),
+                    "dataset_path": str(publication.dataset_path),
+                    "output_path": str(publication.output_path),
+                    "experiment_id": publication.seal.experiment_id,
+                    "run_tier": publication.seal.run_tier,
+                    "scientific_identity_sha256": (publication.scientific_identity_sha256),
+                    "preregistration_sha256": publication.preregistration_sha256,
+                    "created": publication.created,
+                    "provider_constructed": False,
+                    "network_requested": False,
                 }
             )
             return 0
@@ -143,12 +224,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload["schedule"] = _schedule(prepared)
                 _print(payload)
                 return 0
-            result = execute_prepared(prepared)
+            if (
+                prepared.loaded_config.config.provider.kind == "llama_cpp"
+                and not args.allow_live_provider
+            ):
+                raise LiveProviderAuthorizationError(
+                    "llama_cpp execution requires --allow-live-provider in addition to "
+                    "--execute; no provider was constructed"
+                )
+            result = execute_prepared(
+                prepared,
+                allow_live_provider=args.allow_live_provider,
+            )
             payload.update(
                 {
                     "command": "run",
                     "mode": "execute",
                     "provider_calls": result.execution.provider_calls,
+                    "previously_committed_turns": (result.execution.previously_committed_turns),
+                    "dispatched_this_invocation": (result.execution.dispatched_this_invocation),
+                    "successful_responses_this_invocation": (
+                        result.execution.successful_responses_this_invocation
+                    ),
+                    "uncertain_dispatches_this_invocation": (
+                        result.execution.uncertain_dispatches_this_invocation
+                    ),
                     "committed_turns": result.execution.committed_turns,
                     "manifest_sha256": result.execution.manifest_sha256,
                     "scientific_result_sha256": (result.artifacts.scientific_result_sha256),
@@ -157,6 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "phase3_baseline_evaluator_verdict": (
                         result.artifacts.phase3_baseline_evaluator_verdict
                     ),
+                    "scientific_decision": result.artifacts.scientific_decision,
                 }
             )
             _print(payload)
@@ -176,7 +277,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "phase3_baseline_evaluator_verdict": (
                         summary.phase3_baseline_evaluator_verdict
                     ),
-                    "scientific_decision": None,
+                    "scientific_decision": summary.scientific_decision,
                 }
             )
             return 0

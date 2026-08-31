@@ -13,18 +13,20 @@ completion never depends on producing a positive scientific result.
 
 ## Current status
 
-The source tree reports package version `2.0.0b1` and implements the Phase 4
-engineering boundary: the Phase 3 baselines and paired statistical evaluator,
-plus one transparent five-state simulated neural controller and its
-matched-focal-history substrate-reset attribution arm. Phase 2's
-provider-to-artifact kernel remains supported, including strict llama.cpp
-contract behavior and the deterministic fake provider.
+The source tree reports package version `2.0.0b1` and implements the Phase 5
+offline-readiness boundary. It preserves the Phase 2 provider-to-artifact
+kernel, Phase 3 baselines and paired evaluator, and Phase 4 transparent neural
+controller and matched-history reset arm. It now also freezes the exact Phase 5
+tier schedules and datasets and implements preregistration, identity-only
+llama.cpp preflight, durable execution accounting, confirmatory analysis,
+atomic scientific persistence, and deterministic final reporting.
 
-Phase 4 proves controller activity and causal isolation with the deterministic
-fake provider. It does not establish live-provider validity, neural-controller
-benefit, a model-backed result, or a final persistent-state effect on model
-quality. The matched-reset arm is never admitted to the Phase 3 efficacy
-evaluator, and `scientific_decision` remains `null`.
+No live llama.cpp smoke, pilot, or confirmatory run has occurred. Phase 4's
+fake-provider harness proves only controller activity and causal isolation;
+offline Phase 5 fixtures prove only implementation behavior. They establish no
+live-provider validity, neural-controller benefit, model-backed persistent-state
+effect, or observed final decision. The truthful repository status is
+`READY_FOR_LIVE_SMOKE`, and its observed `scientific_decision` remains `null`.
 
 ## Implemented Phase 3 boundary
 
@@ -99,6 +101,25 @@ reset-only state intervention, later decoding/response divergence, bounded
 actions, deterministic serialization, and zero provider calls on replay. This
 is mechanism evidence, not efficacy evidence.
 
+## Implemented Phase 5 readiness boundary
+
+The model-backed protocol has exactly five arms: `best_static`,
+`random_matched`, `heuristic_adaptive`, `neural_persistent`, and the attribution-
+only `neural_matched_history_state_reset`. Its exact schedules are 20 logical
+generations for engineering smoke, 240 for the development pilot, and 2,400 for
+confirmatory evaluation. Smoke and pilot runs are always ineligible for a
+scientific decision.
+
+The confirmatory primary endpoint is `guardrail_clean_task_score`. End-to-end
+efficacy contains the first four independent-history arms; the reset arm is
+reported separately for persistent-state attribution. Recovery reports
+`post_stressor_task_score_change`, `post_stressor_repetition_change`, and
+`time_to_return_to_target_band`, including explicit right-censor counts. A
+claim-eligible closed confirmatory run may emit exactly one of
+`VALIDATED_POSITIVE`, `VALIDATED_NEGATIVE`, `INCONCLUSIVE`, or `INVALID_RUN`.
+The code path is implemented and tested offline; none of those states is an
+observed project result yet.
+
 ## Install
 
 Python 3.12 is required. The intended local environment is:
@@ -119,28 +140,49 @@ python -m pip install -e .
 ## Current command surface
 
 The command surface is machine-readable and supports the historical Phase 2
-smoke configuration, the Phase 3 offline fixtures, and the Phase 4 causal
-harness:
+smoke configuration, Phase 3 offline fixtures, the Phase 4 causal harness, and
+the provider-free and explicitly gated portions of the Phase 5 protocol:
+
+Before using the llama.cpp commands, copy the checked-in examples to ignored
+machine-local files and replace every placeholder with values from the same
+local server and model:
+
+```powershell
+Copy-Item configs/providers/llama_cpp.example.yaml configs/providers/llama_cpp.local.yaml
+Copy-Item configs/experiments/model-backed-confirmatory.example.yaml configs/experiments/model-backed-confirmatory.local.yaml
+Copy-Item configs/experiments/model-backed-live-smoke.example.yaml configs/experiments/model-backed-live-smoke.local.yaml
+```
 
 ```powershell
 neurallm status
+neurallm preflight --provider-config configs/providers/llama_cpp.local.yaml
+neurallm preregister --config configs/experiments/model-backed-confirmatory.local.yaml --output preregistration.json
 neurallm validate --config configs/experiments/phase3-baseline-evaluation.yaml
 neurallm plan --config configs/experiments/phase3-baseline-evaluation.yaml
 neurallm run --config configs/experiments/phase3-baseline-evaluation.yaml --dry-run
 neurallm run --config configs/experiments/phase3-synthetic-evaluator.yaml --execute
 neurallm run --config configs/experiments/phase4-neural-causal-smoke.yaml --dry-run
+neurallm run --config configs/experiments/model-backed-engineering-smoke.yaml --execute
+neurallm run --config configs/experiments/model-backed-live-smoke.local.yaml --execute --allow-live-provider
 neurallm analyze --run-dir runs/phase3-synthetic-evaluator-validation
 neurallm report --run-dir runs/phase3-synthetic-evaluator-validation
 ```
 
-`validate`, `plan`, and `run --dry-run` validate the complete schedule,
+`preflight` deliberately performs only llama.cpp identity inspection through
+`/health` and `/props`; it never requests a completion. `preregister`,
+`validate`, `plan`, and `run --dry-run` validate or freeze declared inputs
+without constructing a generation provider. They cover the complete schedule,
 development-selection evidence, dataset identity, seal when required, policy
-specifications, and evaluator identity without constructing a generation
-provider or requesting network access. `run --execute` is the explicit provider
-boundary. For a Phase 3 configuration it executes or safely resumes the run,
-derives evaluator records from the closed SQLite evidence, finalizes the
-analysis, and exports the compact views. The checked-in Phase 3 configurations
-select only the deterministic fake provider.
+specifications, evaluator identity, and applicable confirmatory-analysis
+contract.
+
+`run --execute` is the explicit provider boundary. A llama.cpp run additionally
+requires `--allow-live-provider`; omission fails before provider construction or
+HTTP. A claim-eligible confirmatory run must use llama.cpp and, after complete
+execution, is analyzed, atomically persisted, read back, and exported only when
+all frozen identity and integrity gates pass. The checked-in executable Phase 3,
+smoke, and pilot configurations select only the deterministic fake provider;
+the llama.cpp examples retain deliberate machine-local placeholders.
 
 `analyze` and `report` re-verify the canonical store and reproduce the derived
 views. After argparse accepts a command, successful application output is
@@ -164,7 +206,11 @@ views. For a Phase 2 run, `comparisons.csv` remains header-only and
 `decision.json` retains the historical `engineering_validation_only` scope. A
 finalized Phase 3 analysis populates comparison rows when comparisons are
 available and emits the Phase 3 verdict and analysis hashes in `decision.json`
-and `report.md`; it still emits `scientific_decision: null`.
+and `report.md`; it still emits `scientific_decision: null`. Model-backed smoke
+and pilot exports also keep that field null. A finalized claim-eligible
+confirmatory export contains exactly three efficacy rows and one attribution-
+only row and propagates one typed final decision through `decision.json`,
+`report.md`, and CLI output.
 
 ## Validate the implementation
 
@@ -185,9 +231,13 @@ coverage without a model call.
 
 Phase 4 adds deterministic neural mechanism activity and a hash-bound,
 matched-focal-history reset isolation test to the Phase 3 comparator and
-evaluator evidence. It does not establish neural efficacy, a beneficial
+evaluator evidence. Phase 5 adds frozen execution, analysis, persistence, and
+decision machinery, but no live or confirmatory execution has occurred.
+Therefore the repository does not establish neural efficacy, a beneficial
 persistent-state effect on model output, live llama.cpp validity, or a final
-scientific outcome. The Phase 3 verdict vocabulary
+scientific outcome. Smoke and pilot remain non-scientific with a null decision;
+only a valid closed llama.cpp confirmatory run may emit `VALIDATED_POSITIVE`,
+`VALIDATED_NEGATIVE`, `INCONCLUSIVE`, or `INVALID_RUN`. The Phase 3 verdict vocabulary
 (`superior`, `inferior`, `equivalent`, `inconclusive`, `invalid`) validates the
 baseline evaluator under its fixture protocol; it is not any Phase 5 decision
 state.

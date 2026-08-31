@@ -1,0 +1,1420 @@
+schema_version: 1
+dataset_id: model-backed-confirmatory
+version: model-backed-confirmatory-v1
+purpose: evaluation
+sequences:
+  - sequence_id: confirm-01-queue-burst
+    cases:
+      - case_id: confirm-01-queue-burst-0
+        prompt_family: constrained_instruction
+        prompt: Explain a distributed queue under burst traffic using the words producer, consumer, and backlog.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - producer
+            - consumer
+            - backlog
+      - case_id: confirm-01-queue-burst-1
+        prompt_family: constrained_instruction
+        prompt: Continue with a distinct operational section using retry, timeout, and dead-letter.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - retry
+            - timeout
+            - dead-letter
+      - case_id: confirm-01-queue-burst-2
+        prompt_family: constrained_instruction
+        prompt: Handle a sudden stressor without looping. Use overload, duplicate, and stall.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - overload
+            - duplicate
+            - stall
+      - case_id: confirm-01-queue-burst-3
+        prompt_family: constrained_instruction
+        prompt: Recover with a fresh checklist using capacity, idempotency, and alerting.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - capacity
+            - idempotency
+            - alerting
+
+  - sequence_id: confirm-02-backup-restore
+    cases:
+      - case_id: confirm-02-backup-restore-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Explain a backup and restore workflow using the words snapshot, checksum, and retention.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - snapshot
+            - checksum
+            - retention
+      - case_id: confirm-02-backup-restore-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue with a distinct operational section using replica, restore, and verification.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - replica
+            - restore
+            - verification
+      - case_id: confirm-02-backup-restore-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Handle a sudden stressor without looping. Use corruption, latency, and rollback.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - corruption
+            - latency
+            - rollback
+      - case_id: confirm-02-backup-restore-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Recover with a fresh checklist using recovery, evidence, and monitoring.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - recovery
+            - evidence
+            - monitoring
+
+  - sequence_id: confirm-03-soil-restoration
+    cases:
+      - case_id: confirm-03-soil-restoration-0
+        prompt_family: mixed_transition
+        prompt: Explain a soil restoration program using the words erosion, microbes, and monitoring.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - erosion
+            - microbes
+            - monitoring
+      - case_id: confirm-03-soil-restoration-1
+        prompt_family: mixed_transition
+        prompt: Continue with a distinct operational section using baseline, intervention, and measurement.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - baseline
+            - intervention
+            - measurement
+      - case_id: confirm-03-soil-restoration-2
+        prompt_family: mixed_transition
+        prompt: Handle a sudden stressor without looping. Use drought, compaction, and loss.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - drought
+            - compaction
+            - loss
+      - case_id: confirm-03-soil-restoration-3
+        prompt_family: mixed_transition
+        prompt: Recover with a fresh checklist using diversity, resilience, and evidence.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - diversity
+            - resilience
+            - evidence
+
+  - sequence_id: confirm-04-incident-triage
+    cases:
+      - case_id: confirm-04-incident-triage-0
+        prompt_family: creative_constrained
+        prompt: Explain an incident triage process using the words signal, severity, and owner.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - signal
+            - severity
+            - owner
+      - case_id: confirm-04-incident-triage-1
+        prompt_family: creative_constrained
+        prompt: Continue with a distinct operational section using timeline, hypothesis, and test.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - timeline
+            - hypothesis
+            - test
+      - case_id: confirm-04-incident-triage-2
+        prompt_family: creative_constrained
+        prompt: Handle a sudden stressor without looping. Use cascade, noise, and pressure.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - cascade
+            - noise
+            - pressure
+      - case_id: confirm-04-incident-triage-3
+        prompt_family: creative_constrained
+        prompt: Recover with a fresh checklist using mitigation, validation, and followup.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - mitigation
+            - validation
+            - followup
+
+  - sequence_id: confirm-05-cache-stampede
+    cases:
+      - case_id: confirm-05-cache-stampede-0
+        prompt_family: constrained_instruction
+        prompt: Explain a cache stampede response using the words burst, lock, and expiry.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - burst
+            - lock
+            - expiry
+      - case_id: confirm-05-cache-stampede-1
+        prompt_family: constrained_instruction
+        prompt: Continue with a distinct operational section using jitter, lease, and coalescing.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - jitter
+            - lease
+            - coalescing
+      - case_id: confirm-05-cache-stampede-2
+        prompt_family: constrained_instruction
+        prompt: Handle a sudden stressor without looping. Use eviction, contention, and timeout.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - eviction
+            - contention
+            - timeout
+      - case_id: confirm-05-cache-stampede-3
+        prompt_family: constrained_instruction
+        prompt: Recover with a fresh checklist using capacity, monitoring, and recovery.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - capacity
+            - monitoring
+            - recovery
+
+  - sequence_id: confirm-06-sensor-calibration
+    cases:
+      - case_id: confirm-06-sensor-calibration-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Explain a greenhouse sensor calibration plan using the words baseline, offset, and reference.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - baseline
+            - offset
+            - reference
+      - case_id: confirm-06-sensor-calibration-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue with a distinct operational section using shadow, drift, and sampling.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - shadow
+            - drift
+            - sampling
+      - case_id: confirm-06-sensor-calibration-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Handle a sudden stressor without looping. Use saturation, noise, and failure.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - saturation
+            - noise
+            - failure
+      - case_id: confirm-06-sensor-calibration-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Recover with a fresh checklist using recalibration, test, and outcome.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - recalibration
+            - test
+            - outcome
+
+  - sequence_id: confirm-07-api-migration
+    cases:
+      - case_id: confirm-07-api-migration-0
+        prompt_family: mixed_transition
+        prompt: Explain an API migration using the words contract, client, and version.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - contract
+            - client
+            - version
+      - case_id: confirm-07-api-migration-1
+        prompt_family: mixed_transition
+        prompt: Continue with a distinct operational section using shadowing, telemetry, and rollback.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - shadowing
+            - telemetry
+            - rollback
+      - case_id: confirm-07-api-migration-2
+        prompt_family: mixed_transition
+        prompt: Handle a sudden stressor without looping. Use breakage, latency, and mismatch.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - breakage
+            - latency
+            - mismatch
+      - case_id: confirm-07-api-migration-3
+        prompt_family: mixed_transition
+        prompt: Recover with a fresh checklist using compatibility, cutover, and evidence.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - compatibility
+            - cutover
+            - evidence
+
+  - sequence_id: confirm-08-database-failover
+    cases:
+      - case_id: confirm-08-database-failover-0
+        prompt_family: creative_constrained
+        prompt: Explain a database failover procedure using the words primary, replica, and quorum.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - primary
+            - replica
+            - quorum
+      - case_id: confirm-08-database-failover-1
+        prompt_family: creative_constrained
+        prompt: Continue with a distinct operational section using lag, fencing, and promotion.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - lag
+            - fencing
+            - promotion
+      - case_id: confirm-08-database-failover-2
+        prompt_family: creative_constrained
+        prompt: Handle a sudden stressor without looping. Use partition, split-brain, and loss.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - partition
+            - split-brain
+            - loss
+      - case_id: confirm-08-database-failover-3
+        prompt_family: creative_constrained
+        prompt: Recover with a fresh checklist using rejoin, validation, and monitoring.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - rejoin
+            - validation
+            - monitoring
+
+  - sequence_id: confirm-09-supply-chain
+    cases:
+      - case_id: confirm-09-supply-chain-0
+        prompt_family: constrained_instruction
+        prompt: Explain a supply chain resilience plan using the words supplier, inventory, and lead-time.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - supplier
+            - inventory
+            - lead-time
+      - case_id: confirm-09-supply-chain-1
+        prompt_family: constrained_instruction
+        prompt: Continue with a distinct operational section using forecast, buffer, and routing.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - forecast
+            - buffer
+            - routing
+      - case_id: confirm-09-supply-chain-2
+        prompt_family: constrained_instruction
+        prompt: Handle a sudden stressor without looping. Use shortage, delay, and disruption.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - shortage
+            - delay
+            - disruption
+      - case_id: confirm-09-supply-chain-3
+        prompt_family: constrained_instruction
+        prompt: Recover with a fresh checklist using substitute, recovery, and audit.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - substitute
+            - recovery
+            - audit
+
+  - sequence_id: confirm-10-wildfire-response
+    cases:
+      - case_id: confirm-10-wildfire-response-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Explain a wildfire response plan using the words detection, wind, and evacuation.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - detection
+            - wind
+            - evacuation
+      - case_id: confirm-10-wildfire-response-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue with a distinct operational section using crew, perimeter, and shelter.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - crew
+            - perimeter
+            - shelter
+      - case_id: confirm-10-wildfire-response-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Handle a sudden stressor without looping. Use smoke, closure, and overload.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - smoke
+            - closure
+            - overload
+      - case_id: confirm-10-wildfire-response-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Recover with a fresh checklist using containment, return, and review.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - containment
+            - return
+            - review
+
+  - sequence_id: confirm-11-water-treatment
+    cases:
+      - case_id: confirm-11-water-treatment-0
+        prompt_family: mixed_transition
+        prompt: Explain a water treatment control plan using the words intake, filter, and chlorine.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - intake
+            - filter
+            - chlorine
+      - case_id: confirm-11-water-treatment-1
+        prompt_family: mixed_transition
+        prompt: Continue with a distinct operational section using turbidity, sampling, and threshold.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - turbidity
+            - sampling
+            - threshold
+      - case_id: confirm-11-water-treatment-2
+        prompt_family: mixed_transition
+        prompt: Handle a sudden stressor without looping. Use contamination, surge, and alarm.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - contamination
+            - surge
+            - alarm
+      - case_id: confirm-11-water-treatment-3
+        prompt_family: mixed_transition
+        prompt: Recover with a fresh checklist using flush, verification, and report.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - flush
+            - verification
+            - report
+
+  - sequence_id: confirm-12-satellite-operations
+    cases:
+      - case_id: confirm-12-satellite-operations-0
+        prompt_family: creative_constrained
+        prompt: Explain a satellite operations procedure using the words orbit, telemetry, and power.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - orbit
+            - telemetry
+            - power
+      - case_id: confirm-12-satellite-operations-1
+        prompt_family: creative_constrained
+        prompt: Continue with a distinct operational section using attitude, uplink, and window.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - attitude
+            - uplink
+            - window
+      - case_id: confirm-12-satellite-operations-2
+        prompt_family: creative_constrained
+        prompt: Handle a sudden stressor without looping. Use anomaly, dropout, and safe-mode.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - anomaly
+            - dropout
+            - safe-mode
+      - case_id: confirm-12-satellite-operations-3
+        prompt_family: creative_constrained
+        prompt: Recover with a fresh checklist using recovery, verification, and handover.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - recovery
+            - verification
+            - handover
+
+  - sequence_id: confirm-13-museum-preservation
+    cases:
+      - case_id: confirm-13-museum-preservation-0
+        prompt_family: constrained_instruction
+        prompt: Explain a museum preservation workflow using the words archive, humidity, and light.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - archive
+            - humidity
+            - light
+      - case_id: confirm-13-museum-preservation-1
+        prompt_family: constrained_instruction
+        prompt: Continue with a distinct operational section using material, inspection, and catalog.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - material
+            - inspection
+            - catalog
+      - case_id: confirm-13-museum-preservation-2
+        prompt_family: constrained_instruction
+        prompt: Handle a sudden stressor without looping. Use leak, mold, and exposure.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - leak
+            - mold
+            - exposure
+      - case_id: confirm-13-museum-preservation-3
+        prompt_family: constrained_instruction
+        prompt: Recover with a fresh checklist using stabilize, document, and monitor.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - stabilize
+            - document
+            - monitor
+
+  - sequence_id: confirm-14-clinic-scheduling
+    cases:
+      - case_id: confirm-14-clinic-scheduling-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Explain a clinic scheduling system using the words appointment, capacity, and priority.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - appointment
+            - capacity
+            - priority
+      - case_id: confirm-14-clinic-scheduling-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue with a distinct operational section using waitlist, handoff, and reminder.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - waitlist
+            - handoff
+            - reminder
+      - case_id: confirm-14-clinic-scheduling-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Handle a sudden stressor without looping. Use absence, surge, and conflict.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - absence
+            - surge
+            - conflict
+      - case_id: confirm-14-clinic-scheduling-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Recover with a fresh checklist using rebalance, confirm, and review.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - rebalance
+            - confirm
+            - review
+
+  - sequence_id: confirm-15-grid-balancing
+    cases:
+      - case_id: confirm-15-grid-balancing-0
+        prompt_family: mixed_transition
+        prompt: Explain an electrical grid balancing plan using the words demand, reserve, and frequency.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - demand
+            - reserve
+            - frequency
+      - case_id: confirm-15-grid-balancing-1
+        prompt_family: mixed_transition
+        prompt: Continue with a distinct operational section using forecast, storage, and dispatch.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - forecast
+            - storage
+            - dispatch
+      - case_id: confirm-15-grid-balancing-2
+        prompt_family: mixed_transition
+        prompt: Handle a sudden stressor without looping. Use outage, spike, and instability.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - outage
+            - spike
+            - instability
+      - case_id: confirm-15-grid-balancing-3
+        prompt_family: mixed_transition
+        prompt: Recover with a fresh checklist using islanding, restore, and verify.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - islanding
+            - restore
+            - verify
+
+  - sequence_id: confirm-16-coastal-restoration
+    cases:
+      - case_id: confirm-16-coastal-restoration-0
+        prompt_family: creative_constrained
+        prompt: Explain a coastal restoration program using the words tide, sediment, and habitat.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - tide
+            - sediment
+            - habitat
+      - case_id: confirm-16-coastal-restoration-1
+        prompt_family: creative_constrained
+        prompt: Continue with a distinct operational section using baseline, planting, and survey.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - baseline
+            - planting
+            - survey
+      - case_id: confirm-16-coastal-restoration-2
+        prompt_family: creative_constrained
+        prompt: Handle a sudden stressor without looping. Use storm, erosion, and salinity.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - storm
+            - erosion
+            - salinity
+      - case_id: confirm-16-coastal-restoration-3
+        prompt_family: creative_constrained
+        prompt: Recover with a fresh checklist using recovery, diversity, and evidence.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - recovery
+            - diversity
+            - evidence
+
+  - sequence_id: confirm-17-compiler-debugging
+    cases:
+      - case_id: confirm-17-compiler-debugging-0
+        prompt_family: constrained_instruction
+        prompt: Explain a compiler debugging workflow using the words parser, typecheck, and trace.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - parser
+            - typecheck
+            - trace
+      - case_id: confirm-17-compiler-debugging-1
+        prompt_family: constrained_instruction
+        prompt: Continue with a distinct operational section using fixture, bisect, and invariant.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - fixture
+            - bisect
+            - invariant
+      - case_id: confirm-17-compiler-debugging-2
+        prompt_family: constrained_instruction
+        prompt: Handle a sudden stressor without looping. Use regression, ambiguity, and failure.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - regression
+            - ambiguity
+            - failure
+      - case_id: confirm-17-compiler-debugging-3
+        prompt_family: constrained_instruction
+        prompt: Recover with a fresh checklist using patch, verify, and document.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - patch
+            - verify
+            - document
+
+  - sequence_id: confirm-18-warehouse-routing
+    cases:
+      - case_id: confirm-18-warehouse-routing-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Explain a warehouse routing system using the words picker, aisle, and batch.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - picker
+            - aisle
+            - batch
+      - case_id: confirm-18-warehouse-routing-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue with a distinct operational section using priority, distance, and capacity.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - priority
+            - distance
+            - capacity
+      - case_id: confirm-18-warehouse-routing-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Handle a sudden stressor without looping. Use blockage, congestion, and delay.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - blockage
+            - congestion
+            - delay
+      - case_id: confirm-18-warehouse-routing-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Recover with a fresh checklist using reroute, measure, and confirm.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - reroute
+            - measure
+            - confirm
+
+  - sequence_id: confirm-19-fraud-detection
+    cases:
+      - case_id: confirm-19-fraud-detection-0
+        prompt_family: mixed_transition
+        prompt: Explain a fraud detection review using the words signal, account, and pattern.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - signal
+            - account
+            - pattern
+      - case_id: confirm-19-fraud-detection-1
+        prompt_family: mixed_transition
+        prompt: Continue with a distinct operational section using threshold, analyst, and evidence.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - threshold
+            - analyst
+            - evidence
+      - case_id: confirm-19-fraud-detection-2
+        prompt_family: mixed_transition
+        prompt: Handle a sudden stressor without looping. Use burst, false-positive, and evasion.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - burst
+            - false-positive
+            - evasion
+      - case_id: confirm-19-fraud-detection-3
+        prompt_family: mixed_transition
+        prompt: Recover with a fresh checklist using calibrate, appeal, and monitor.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - calibrate
+            - appeal
+            - monitor
+
+  - sequence_id: confirm-20-classroom-feedback
+    cases:
+      - case_id: confirm-20-classroom-feedback-0
+        prompt_family: creative_constrained
+        prompt: Explain a classroom feedback process using the words rubric, example, and revision.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - rubric
+            - example
+            - revision
+      - case_id: confirm-20-classroom-feedback-1
+        prompt_family: creative_constrained
+        prompt: Continue with a distinct operational section using question, practice, and reflection.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - question
+            - practice
+            - reflection
+      - case_id: confirm-20-classroom-feedback-2
+        prompt_family: creative_constrained
+        prompt: Handle a sudden stressor without looping. Use confusion, overload, and silence.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - confusion
+            - overload
+            - silence
+      - case_id: confirm-20-classroom-feedback-3
+        prompt_family: creative_constrained
+        prompt: Recover with a fresh checklist using clarify, retry, and assess.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - clarify
+            - retry
+            - assess
+
+  - sequence_id: confirm-21-battery-monitoring
+    cases:
+      - case_id: confirm-21-battery-monitoring-0
+        prompt_family: constrained_instruction
+        prompt: Explain a battery monitoring program using the words voltage, temperature, and cycle.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - voltage
+            - temperature
+            - cycle
+      - case_id: confirm-21-battery-monitoring-1
+        prompt_family: constrained_instruction
+        prompt: Continue with a distinct operational section using baseline, trend, and threshold.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - baseline
+            - trend
+            - threshold
+      - case_id: confirm-21-battery-monitoring-2
+        prompt_family: constrained_instruction
+        prompt: Handle a sudden stressor without looping. Use spike, imbalance, and degradation.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - spike
+            - imbalance
+            - degradation
+      - case_id: confirm-21-battery-monitoring-3
+        prompt_family: constrained_instruction
+        prompt: Recover with a fresh checklist using isolate, recover, and verify.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - isolate
+            - recover
+            - verify
+
+  - sequence_id: confirm-22-network-partition
+    cases:
+      - case_id: confirm-22-network-partition-0
+        prompt_family: long_form_anti_degeneracy
+        prompt: Explain a network partition response using the words node, quorum, and latency.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - node
+            - quorum
+            - latency
+      - case_id: confirm-22-network-partition-1
+        prompt_family: long_form_anti_degeneracy
+        prompt: Continue with a distinct operational section using heartbeat, lease, and fencing.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - heartbeat
+            - lease
+            - fencing
+      - case_id: confirm-22-network-partition-2
+        prompt_family: long_form_anti_degeneracy
+        prompt: Handle a sudden stressor without looping. Use partition, retry, and divergence.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - partition
+            - retry
+            - divergence
+      - case_id: confirm-22-network-partition-3
+        prompt_family: long_form_anti_degeneracy
+        prompt: Recover with a fresh checklist using reconcile, restore, and audit.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - reconcile
+            - restore
+            - audit
+
+  - sequence_id: confirm-23-document-audit
+    cases:
+      - case_id: confirm-23-document-audit-0
+        prompt_family: mixed_transition
+        prompt: Explain a document audit workflow using the words source, claim, and citation.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - source
+            - claim
+            - citation
+      - case_id: confirm-23-document-audit-1
+        prompt_family: mixed_transition
+        prompt: Continue with a distinct operational section using version, reviewer, and exception.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - version
+            - reviewer
+            - exception
+      - case_id: confirm-23-document-audit-2
+        prompt_family: mixed_transition
+        prompt: Handle a sudden stressor without looping. Use conflict, omission, and tampering.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - conflict
+            - omission
+            - tampering
+      - case_id: confirm-23-document-audit-3
+        prompt_family: mixed_transition
+        prompt: Recover with a fresh checklist using resolve, signoff, and archive.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - resolve
+            - signoff
+            - archive
+
+  - sequence_id: confirm-24-robotics-recovery
+    cases:
+      - case_id: confirm-24-robotics-recovery-0
+        prompt_family: creative_constrained
+        prompt: Explain a robotics recovery controller using the words sensor, trajectory, and grip.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.2
+          target_length: 128.0
+          transition_intensity: 0.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - sensor
+            - trajectory
+            - grip
+      - case_id: confirm-24-robotics-recovery-1
+        prompt_family: creative_constrained
+        prompt: Continue with a distinct operational section using state, constraint, and feedback.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.5
+          target_length: 128.0
+          transition_intensity: 0.3
+        validator:
+          kind: contains_all
+          required_terms:
+            - state
+            - constraint
+            - feedback
+      - case_id: confirm-24-robotics-recovery-2
+        prompt_family: creative_constrained
+        prompt: Handle a sudden stressor without looping. Use collision, slip, and stall.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 1.0
+          target_length: 128.0
+          transition_intensity: 1.0
+        validator:
+          kind: contains_all
+          required_terms:
+            - collision
+            - slip
+            - stall
+      - case_id: confirm-24-robotics-recovery-3
+        prompt_family: creative_constrained
+        prompt: Recover with a fresh checklist using reset, replan, and verify.
+        prompt_features:
+          constraint_count: 3.0
+          degeneracy_stress: 0.4
+          target_length: 128.0
+          transition_intensity: 0.6
+        validator:
+          kind: contains_all
+          required_terms:
+            - reset
+            - replan
+            - verify

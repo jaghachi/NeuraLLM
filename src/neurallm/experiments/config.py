@@ -31,9 +31,15 @@ from neurallm.domain.models import (
     SeedSchedule,
 )
 from neurallm.domain.serialization import canonical_json, canonical_sha256
+from neurallm.evaluation.confirmatory import ConfirmatoryAnalysisSpec
 from neurallm.evaluation.models import DatasetPurpose, EvaluationSpec
 from neurallm.evaluation.selection import StaticSelectionRecord
 from neurallm.experiments.dataset import DatasetSeal
+from neurallm.experiments.protocol import (
+    ExperimentProtocol,
+    PreregistrationSeal,
+    RunTier,
+)
 from neurallm.experiments.yaml_loader import load_yaml_mapping
 
 
@@ -164,6 +170,18 @@ class ExperimentConfig(_StrictFrozenModel):
     provider: ProviderSelection
     policy_ids: tuple[str, ...] | None = None
     policy_specs: tuple[PolicySpec, ...] | None = None
+    protocol: ExperimentProtocol | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    preregistration: PreregistrationSeal | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    confirmatory_analysis: ConfirmatoryAnalysisSpec | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     evaluation: EvaluationSpec | None = None
     development_selection_input: DevelopmentSelectionInput | None = None
     static_selection_record: StaticSelectionRecord | None = None
@@ -323,12 +341,119 @@ class ExperimentConfig(_StrictFrozenModel):
                 (NeuralPersistentPolicySpec, NeuralMatchedHistoryStateResetPolicySpec),
             )
         )
-        if neural_specs and self.evaluation is not None:
-            raise ValueError("neural policies are not admitted to Phase 3 efficacy evaluation")
         for spec in matched_history_specs:
             source_policy_id = getattr(spec, "history_source_policy_id", None)
             if source_policy_id not in configured_policy_ids:
                 raise ValueError("matched-history policy requires its declared focal source policy")
+        if self.static_selection_record is not None:
+            if self.development_selection_input is None:
+                raise ValueError("static selection record requires its declared development input")
+            development_hash = self.development_selection_input.dataset.expected_dataset_sha256
+            if development_hash != self.static_selection_record.development_dataset_sha256:
+                raise ValueError(
+                    "static selection record does not match the declared development input"
+                )
+        if self.protocol is not None:
+            if self.policy_specs is None:
+                raise ValueError("model-backed protocol requires typed policy_specs")
+            if self.configured_policy_ids != self.protocol.policy_ids:
+                raise ValueError("model-backed protocol requires its exact five policy specs")
+            if len(matched_history_specs) != 1 or (
+                matched_history_specs[0].policy_id != self.protocol.attribution.policy_id
+                or getattr(matched_history_specs[0], "history_source_policy_id", None)
+                != self.protocol.attribution.history_source_policy_id
+            ):
+                raise ValueError("model-backed protocol requires its exact attribution edge")
+            if len(neural_specs) != 2:
+                raise ValueError("model-backed protocol requires both declared neural policies")
+            schedule = self.protocol.schedule
+            if schedule.model_seed_count != len(self.model_seeds):
+                raise ValueError("protocol model_seed_count does not match model_seeds")
+            if schedule.controller_seed_count != len(self.controller_seeds):
+                raise ValueError("protocol controller_seed_count does not match controller_seeds")
+            if schedule.policy_count != len(self.configured_policy_ids):
+                raise ValueError("protocol policy_count does not match configured policies")
+            if self.decision_rule_version != self.protocol.decision_rule_version:
+                raise ValueError("decision_rule_version does not match the model-backed tier")
+
+            tier = self.protocol.run_tier
+            if tier in {RunTier.ENGINEERING_SMOKE, RunTier.DEVELOPMENT_PILOT}:
+                if self.dataset.purpose is not DatasetPurpose.DEVELOPMENT:
+                    raise ValueError("smoke and pilot protocols require development-purpose data")
+                if self.preregistration is not None:
+                    raise ValueError("only confirmatory protocols may carry preregistration")
+                if self.evaluation is not None:
+                    raise ValueError(
+                        "smoke and pilot protocols cannot produce confirmatory evaluation"
+                    )
+                if self.confirmatory_analysis is not None:
+                    raise ValueError(
+                        "smoke and pilot protocols cannot carry confirmatory analysis rules"
+                    )
+                return self
+
+            if self.dataset.purpose is not DatasetPurpose.EVALUATION:
+                raise ValueError("confirmatory protocol requires sealed evaluation-purpose data")
+            if self.provider.kind != "llama_cpp":
+                raise ValueError("confirmatory protocol requires the explicit llama_cpp provider")
+            if self.evaluation is None:
+                raise ValueError("confirmatory protocol requires an EvaluationSpec")
+            if self.confirmatory_analysis is None:
+                raise ValueError("confirmatory protocol requires frozen final analysis rules")
+            if self.preregistration is not None and (
+                self.preregistration.experiment_id != self.experiment_id
+                or self.preregistration.run_tier != tier.value
+            ):
+                raise ValueError("preregistration seal does not match the confirmatory protocol")
+            if (
+                self.evaluation.focal_policy_id != self.protocol.focal_policy_id
+                or self.evaluation.required_serious_comparator_ids
+                != self.protocol.required_serious_comparator_ids
+                or self.evaluation.negative_control_policy_ids
+                != self.protocol.negative_control_policy_ids
+            ):
+                raise ValueError("EvaluationSpec roles do not match model-backed efficacy roles")
+            efficacy = self.confirmatory_analysis.efficacy
+            if (
+                efficacy.focal_policy_id != self.evaluation.focal_policy_id
+                or efficacy.serious_comparator_ids
+                != self.evaluation.required_serious_comparator_ids
+                or efficacy.negative_control_policy_id
+                != self.evaluation.negative_control_policy_ids[0]
+                or efficacy.practical_effect_threshold != self.evaluation.practical_effect_threshold
+                or efficacy.bootstrap_resamples != self.evaluation.bootstrap_resamples
+                or efficacy.confidence_level != self.evaluation.confidence_level
+                or efficacy.bootstrap_seed != self.evaluation.bootstrap_seed
+                or efficacy.permutation_resamples != self.evaluation.permutation_resamples
+                or efficacy.permutation_seed != self.evaluation.permutation_seed
+            ):
+                raise ValueError(
+                    "confirmatory efficacy rules disagree with the frozen EvaluationSpec"
+                )
+            if self.development_selection_input is None or self.static_selection_record is None:
+                raise ValueError(
+                    "confirmatory protocol requires frozen development selection evidence"
+                )
+            winner = self.static_selection_record.winning_profile
+            if self.base_decoding_profile_id != winner.profile_id or (
+                self.base_decoding_profile
+                != BaseDecodingProfile(
+                    temperature=winner.temperature,
+                    top_p=winner.top_p,
+                    top_k=winner.top_k,
+                    presence_penalty=winner.presence_penalty,
+                    max_tokens=winner.max_tokens,
+                )
+            ):
+                raise ValueError("best_static winner must be the shared frozen base profile")
+            return self
+
+        if self.preregistration is not None:
+            raise ValueError("preregistration requires a model-backed protocol")
+        if self.confirmatory_analysis is not None:
+            raise ValueError("confirmatory analysis rules require a model-backed protocol")
+        if neural_specs and self.evaluation is not None:
+            raise ValueError("neural policies are not admitted to Phase 3 efficacy evaluation")
         if matched_history_specs:
             phase4_policy_ids = {
                 "neural_persistent",
@@ -338,14 +463,6 @@ class ExperimentConfig(_StrictFrozenModel):
                 raise ValueError("Phase 4 requires exactly the two neural attribution policies")
             if self.dataset.purpose is not DatasetPurpose.DEVELOPMENT:
                 raise ValueError("Phase 4 requires a pinned development-purpose dataset")
-        if self.static_selection_record is not None:
-            if self.development_selection_input is None:
-                raise ValueError("static selection record requires its declared development input")
-            development_hash = self.development_selection_input.dataset.expected_dataset_sha256
-            if development_hash != self.static_selection_record.development_dataset_sha256:
-                raise ValueError(
-                    "static selection record does not match the declared development input"
-                )
         if self.evaluation is None:
             if self.dataset.purpose in {
                 DatasetPurpose.EVALUATION,
@@ -442,6 +559,10 @@ class ExperimentConfig(_StrictFrozenModel):
             payload["evaluation_spec_sha256"] = self.evaluation_spec_sha256
             payload["development_selection_input"] = self.development_selection_input
             payload["static_selection_record"] = self.static_selection_record
+        if self.protocol is not None:
+            payload["protocol"] = self.protocol
+        if self.confirmatory_analysis is not None:
+            payload["confirmatory_analysis"] = self.confirmatory_analysis
         return canonical_sha256(payload)
 
 
@@ -496,10 +617,14 @@ def load_experiment_config(path: Path) -> LoadedExperimentConfig:
 
 __all__ = [
     "BaseDecodingProfile",
+    "ConfirmatoryAnalysisSpec",
     "DatasetReference",
     "DevelopmentSelectionInput",
     "ExperimentConfig",
     "LoadedExperimentConfig",
+    "ExperimentProtocol",
+    "PreregistrationSeal",
     "ProviderSelection",
+    "RunTier",
     "load_experiment_config",
 ]

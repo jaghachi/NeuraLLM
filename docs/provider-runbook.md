@@ -79,33 +79,22 @@ automatic download, provider fallback, or retry transport.
 ## Deliberate identity preflight
 
 An experiment configuration must contain both the provider-config path and the
-exact expected `ProviderIdentity`. To inspect that identity, run this deliberate
-network preflight only while the intended server is available:
+exact expected `ProviderIdentity`. Inspect that identity with the first-class
+preflight command, using only an explicit machine-local file:
 
 ```powershell
-@'
-import json
-from pathlib import Path
-
-from neurallm.experiments.yaml_loader import load_yaml_mapping
-from neurallm.providers import LlamaCppProvider, LlamaCppProviderConfig
-
-path = Path("configs/providers/llama_cpp.local.yaml")
-config = LlamaCppProviderConfig.model_validate(load_yaml_mapping(path))
-with LlamaCppProvider(config) as provider:
-    print("  expected_identity:")
-    for key, value in provider.provider_identity.model_dump(mode="json").items():
-        print(f"    {key}: {json.dumps(value, ensure_ascii=False)}")
-    print("  expected_effective_configuration_json: >-")
-    print(f"    {provider.effective_configuration_json}")
-'@ | python -
+neurallm preflight --provider-config configs/providers/llama_cpp.local.yaml
 ```
 
-This performs `/health` and `/props` only; it does not dispatch a completion.
-The output is an indented YAML fragment containing both the identity and the
-exact one-line canonical effective-configuration JSON. Paste both returned
-fields under `provider`, and point `config_path` to the same provider file,
-relative to the experiment config:
+This is a deliberate network operation, but it performs exactly one `GET
+/health` and one `GET /props`; it never requests `/completion`. The provider
+configuration is not read from an environment variable. Success emits one
+canonical JSON object containing `expected_identity`, `provider_identity_id`,
+`expected_effective_configuration_json`, and `completion_requested: false`.
+
+Copy `expected_identity` and the exact one-line
+`expected_effective_configuration_json` value under `provider`, and point
+`config_path` to the same provider file, relative to the experiment config:
 
 ```yaml
 provider:
@@ -127,7 +116,9 @@ provider:
 The `>-` block scalar preserves the pasted one-line JSON without adding a
 trailing newline. Replace its entire example line; do not pretty-print, reorder,
 edit, or re-encode the preflight output. Validation requires that exact
-canonical string to hash to `expected_identity.provider_config_hash`.
+canonical string to hash to `expected_identity.provider_config_hash`. The
+top-level `provider_identity_id` is verification output and is not a separate
+experiment-config field.
 
 `provider_config_hash` binds the explicit client configuration and the inspected
 effective server configuration. If the server, timeouts, defaults, slots,
@@ -146,17 +137,21 @@ neurallm plan --config path/to/experiment.yaml
 neurallm run --config path/to/experiment.yaml --dry-run
 ```
 
-Only this command crosses the provider-construction and generation boundary:
+Only this command crosses the llama.cpp provider-construction and generation
+boundary:
 
 ```powershell
-neurallm run --config path/to/experiment.yaml --execute
+neurallm run --config path/to/experiment.yaml --execute --allow-live-provider
 ```
 
-Execution constructs exactly the selected provider and requires its inspected
-identity to equal `expected_identity` before the run manifest is bound. Each
-pending logical turn gets at most one `/completion` dispatch. If transport fails
-after dispatch begins, the SQLite turn becomes uncertain and resume fails closed
-instead of silently generating again.
+For `kind: llama_cpp`, both `--execute` and `--allow-live-provider` are required.
+Omitting the second flag fails before provider construction or HTTP. Fake-provider
+execution remains available with `--execute` alone. Authorized execution
+constructs exactly the selected provider and requires its inspected identity to
+equal `expected_identity` before the run manifest is bound. Each pending logical
+turn gets at most one `/completion` dispatch. If transport fails after dispatch
+begins, the SQLite turn becomes uncertain and resume fails closed instead of
+silently generating again.
 
 ## Explicit live test
 
@@ -209,6 +204,7 @@ substitute for recording a passing live command against the exact bound server.
 | Failure | Result |
 | --- | --- |
 | Invalid explicit config or prohibited URL shape | Validation fails before HTTP |
+| llama.cpp `run --execute` without `--allow-live-provider` | Authorization fails before provider construction or HTTP |
 | Timeout, connection error, or non-200 response | `LlamaCppTransportError`; no retry |
 | Invalid JSON, response shape, types, or effective settings | `LlamaCppProtocolError` |
 | Changed model path, build, template, defaults, slots, alias, or effective identity | `LlamaCppIdentityDriftError` |
