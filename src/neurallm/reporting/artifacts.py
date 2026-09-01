@@ -1,4 +1,4 @@
-"""Export compact deterministic views of canonical Phase 2 through Phase 4 stores."""
+"""Export compact deterministic views of canonical Phase 2 through Phase 5 stores."""
 
 from __future__ import annotations
 
@@ -13,19 +13,24 @@ from tempfile import NamedTemporaryFile
 from neurallm.control.action_space import apply_action, normalized_action_magnitude
 from neurallm.control.neural import ActionDecoder, NeuralSubstrate, ObservationEncoder
 from neurallm.domain.models import (
+    ControllerAction,
     ControllerObservation,
     MetricValue,
     ResponseMetrics,
     RunManifest,
 )
 from neurallm.domain.serialization import canonical_json, canonical_sha256
+from neurallm.evaluation.scientific import NegativeSideEvidence, ScientificGuardrailResult
 from neurallm.storage import (
     CURRENT_SCHEMA_VERSION,
+    RunFinalization,
     SQLiteRunStore,
     StoredAnalysis,
+    StoredScientificAnalysis,
     StoredTurn,
     TurnInputEvidence,
     TurnState,
+    scientific_result_sha256,
 )
 
 CLOSED_RUN_ARTIFACTS = frozenset(
@@ -102,8 +107,62 @@ _PHASE3_COMPARISON_FIELDS = (
     "status",
 )
 
+_PHASE5_COMPARISON_FIELDS = (
+    "comparison_id",
+    "comparison_kind",
+    "focal_policy_id",
+    "comparator_policy_id",
+    "comparator_role",
+    "attribution_only",
+    "included_in_efficacy",
+    "included_in_holm_family",
+    "primary_metric",
+    "unit_count",
+    "mean_difference",
+    "bootstrap_lower",
+    "bootstrap_upper",
+    "bootstrap_resamples",
+    "bootstrap_seed",
+    "negative_multiplicity_method",
+    "negative_familywise_alpha",
+    "negative_family_size",
+    "negative_confidence_level",
+    "negative_bootstrap_lower",
+    "negative_bootstrap_upper",
+    "negative_bootstrap_resamples",
+    "negative_bootstrap_seed",
+    "negative_decisive",
+    "permutation_p_value",
+    "permutation_exact",
+    "permutation_count",
+    "permutation_seed",
+    "holm_adjusted_p_value",
+    "practical_effect_threshold",
+    "behavioral_alias",
+    "guardrail_statuses",
+    "status",
+    "detail",
+)
+
+_PHASE2_DECISION_RULE_VERSION = "phase2-no-scientific-decision-v1"
 _PHASE3_DECISION_RULE_VERSION = "phase3-baseline-evaluator-v1"
 _PHASE4_DECISION_RULE_VERSION = "phase4-neural-mechanism-only-v1"
+_CONFIRMATORY_DECISION_RULE_VERSION = "confirmatory-scientific-decision-v2"
+_MODEL_BACKED_NONSCIENTIFIC_RULE_TIERS = {
+    "engineering-smoke-no-scientific-decision-v1": "engineering_smoke",
+    "development-pilot-no-scientific-decision-v1": "development_pilot",
+}
+_MODEL_BACKED_RULE_TIERS = {
+    **_MODEL_BACKED_NONSCIENTIFIC_RULE_TIERS,
+    _CONFIRMATORY_DECISION_RULE_VERSION: "confirmatory",
+}
+_MODEL_BACKED_POLICY_IDS = {
+    "best_static",
+    "heuristic_adaptive",
+    "neural_matched_history_state_reset",
+    "neural_persistent",
+    "random_matched",
+}
 _PHASE4_MATCHED_HISTORY_POLICY_SOURCES = {
     "neural_matched_history_state_reset": "neural_persistent",
 }
@@ -120,6 +179,7 @@ class ArtifactExportSummary:
     artifact_names: tuple[str, ...]
     implementation_phase: int
     phase3_baseline_evaluator_verdict: str | None
+    scientific_decision: str | None = None
 
 
 def _metric_value(metric: MetricValue[int] | MetricValue[float]) -> int | float | str:
@@ -258,6 +318,44 @@ def _phase4_decision_payload(
     }
 
 
+def _model_backed_nonscientific_decision_payload(
+    manifest: RunManifest,
+    finalization: RunFinalization,
+    turns: tuple[StoredTurn, ...],
+) -> dict[str, object]:
+    """Return an explicitly non-scientific smoke or pilot closeout."""
+
+    tier = _MODEL_BACKED_NONSCIENTIFIC_RULE_TIERS[manifest.decision_rule_version]
+    accounting = finalization.execution_accounting
+    if accounting is None:
+        raise ValueError("model-backed closeout lacks durable execution accounting")
+    return {
+        "schema_version": 1,
+        "implementation_phase": 5,
+        "run_tier": tier,
+        "claim_scope": (
+            "engineering_validation_only"
+            if tier == "engineering_smoke"
+            else "development_calibration_only"
+        ),
+        "scientific_decision": None,
+        "comparison_status": "not_eligible_for_confirmatory_inference",
+        "decision_rule_version": manifest.decision_rule_version,
+        "manifest_sha256": canonical_sha256(manifest),
+        "scientific_result_sha256": scientific_result_sha256(turns),
+        "scientific_identity_sha256": manifest.scientific_identity_sha256,
+        "provider_type": manifest.provider_identity.provider_type,
+        "committed_turns": len(turns),
+        "matched_history_policy_sources": dict(manifest.matched_history_policy_sources),
+        "execution_accounting": accounting.model_dump(mode="json"),
+        "database_integrity_verified": True,
+        "rationale": (
+            "This tier verifies the complete five-arm engineering and causal-evidence path. "
+            "It is not eligible to emit a confirmatory scientific decision."
+        ),
+    }
+
+
 def _phase4_trajectory_key(turn: StoredTurn, policy_id: str) -> tuple[object, ...]:
     condition = turn.condition
     return (
@@ -298,7 +396,12 @@ def _validate_phase4_mechanism_evidence(
 
     persistent_id = "neural_persistent"
     reset_id = "neural_matched_history_state_reset"
-    expected_policy_ids = {persistent_id, reset_id}
+    neural_policy_ids = {persistent_id, reset_id}
+    expected_policy_ids = (
+        _MODEL_BACKED_POLICY_IDS
+        if manifest.decision_rule_version in _MODEL_BACKED_RULE_TIERS
+        else neural_policy_ids
+    )
     if manifest.database_schema_version != CURRENT_SCHEMA_VERSION:
         raise ValueError("Phase 4 export requires the current database schema")
     if set(manifest.policy_config_hashes) != expected_policy_ids:
@@ -314,6 +417,7 @@ def _validate_phase4_mechanism_evidence(
     ):
         raise ValueError("Phase 4 export requires exact prompt-side evidence coverage")
 
+    neural_turns = tuple(turn for turn in turns if turn.condition.policy_id in neural_policy_ids)
     by_condition_id = {turn.condition_id: turn for turn in turns}
     by_coordinate = {_phase4_trajectory_key(turn, turn.condition.policy_id): turn for turn in turns}
     base_parameters_by_trajectory = {
@@ -324,7 +428,7 @@ def _validate_phase4_mechanism_evidence(
     traces: dict[str, CausalAppliedPolicyTrace] = {}
     later_reset_count = 0
     any_later_activity = False
-    for turn in turns:
+    for turn in neural_turns:
         if (
             turn.state is not TurnState.COMMITTED
             or turn.response is None
@@ -627,6 +731,199 @@ def _phase3_decision_payload(
     }
 
 
+def _scientific_guardrail_statuses(
+    guardrails: tuple[ScientificGuardrailResult, ...],
+) -> str:
+    """Render typed scientific guardrails in stable scope/name order."""
+
+    ordered = sorted(
+        guardrails,
+        key=lambda guardrail: (
+            guardrail.scope,
+            guardrail.name,
+        ),
+    )
+    return ";".join(
+        f"{guardrail.scope}:{guardrail.name}={guardrail.status.value}" for guardrail in ordered
+    )
+
+
+def _phase5_comparison_rows(
+    analysis: StoredScientificAnalysis,
+) -> tuple[dict[str, object], ...]:
+    """Return the exact three efficacy rows plus one attribution-only row."""
+
+    rows: list[dict[str, object]] = []
+    for comparison in analysis.result.efficacy_comparisons:
+        bootstrap = comparison.bootstrap
+        negative = comparison.negative_side_evidence
+        permutation = comparison.permutation
+        rows.append(
+            {
+                "comparison_id": canonical_sha256(comparison),
+                "comparison_kind": comparison.comparison_kind,
+                "focal_policy_id": comparison.focal_policy_id,
+                "comparator_policy_id": comparison.comparator_policy_id,
+                "comparator_role": comparison.comparator_role.value,
+                "attribution_only": False,
+                "included_in_efficacy": True,
+                "included_in_holm_family": comparison.included_in_holm_family,
+                "primary_metric": comparison.primary_metric,
+                "unit_count": comparison.unit_count,
+                "mean_difference": (
+                    "" if comparison.mean_difference is None else comparison.mean_difference
+                ),
+                "bootstrap_lower": "" if bootstrap is None else bootstrap.lower,
+                "bootstrap_upper": "" if bootstrap is None else bootstrap.upper,
+                "bootstrap_resamples": "" if bootstrap is None else bootstrap.resamples,
+                "bootstrap_seed": "" if bootstrap is None else bootstrap.seed,
+                **_negative_side_fields(negative),
+                "permutation_p_value": "" if permutation is None else permutation.p_value,
+                "permutation_exact": "" if permutation is None else permutation.exact,
+                "permutation_count": (
+                    "" if permutation is None else permutation.performed_permutations
+                ),
+                "permutation_seed": "" if permutation is None else permutation.seed,
+                "holm_adjusted_p_value": (
+                    "" if comparison.holm is None else comparison.holm.adjusted_p_value
+                ),
+                "practical_effect_threshold": comparison.practical_effect_threshold,
+                "behavioral_alias": comparison.behavioral_alias,
+                "guardrail_statuses": _scientific_guardrail_statuses(tuple(comparison.guardrails)),
+                "status": comparison.status.value,
+                "detail": comparison.detail,
+            }
+        )
+
+    attribution = analysis.result.attribution
+    bootstrap = attribution.bootstrap
+    negative = attribution.negative_side_evidence
+    permutation = attribution.permutation
+    rows.append(
+        {
+            "comparison_id": canonical_sha256(attribution),
+            "comparison_kind": attribution.comparison_kind,
+            "focal_policy_id": attribution.focal_policy_id,
+            "comparator_policy_id": attribution.comparator_policy_id,
+            "comparator_role": "attribution_only",
+            "attribution_only": attribution.attribution_only,
+            "included_in_efficacy": attribution.included_in_efficacy,
+            "included_in_holm_family": attribution.included_in_holm_family,
+            "primary_metric": attribution.primary_metric,
+            "unit_count": attribution.unit_count,
+            "mean_difference": (
+                "" if attribution.mean_difference is None else attribution.mean_difference
+            ),
+            "bootstrap_lower": "" if bootstrap is None else bootstrap.lower,
+            "bootstrap_upper": "" if bootstrap is None else bootstrap.upper,
+            "bootstrap_resamples": "" if bootstrap is None else bootstrap.resamples,
+            "bootstrap_seed": "" if bootstrap is None else bootstrap.seed,
+            **_negative_side_fields(negative),
+            "permutation_p_value": "" if permutation is None else permutation.p_value,
+            "permutation_exact": "" if permutation is None else permutation.exact,
+            "permutation_count": (
+                "" if permutation is None else permutation.performed_permutations
+            ),
+            "permutation_seed": "" if permutation is None else permutation.seed,
+            "holm_adjusted_p_value": "",
+            "practical_effect_threshold": attribution.practical_effect_threshold,
+            "behavioral_alias": attribution.behavioral_alias,
+            "guardrail_statuses": _scientific_guardrail_statuses(
+                tuple(attribution.causal_guardrails)
+            ),
+            "status": attribution.status.value,
+            "detail": attribution.detail,
+        }
+    )
+    if len(rows) != 4:
+        raise ValueError("confirmatory export requires three efficacy rows plus attribution")
+    return tuple(rows)
+
+
+def _negative_side_fields(evidence: NegativeSideEvidence | None) -> dict[str, object]:
+    if evidence is None:
+        return {
+            "negative_multiplicity_method": "",
+            "negative_familywise_alpha": "",
+            "negative_family_size": "",
+            "negative_confidence_level": "",
+            "negative_bootstrap_lower": "",
+            "negative_bootstrap_upper": "",
+            "negative_bootstrap_resamples": "",
+            "negative_bootstrap_seed": "",
+            "negative_decisive": "",
+        }
+    return {
+        "negative_multiplicity_method": evidence.method_version,
+        "negative_familywise_alpha": evidence.familywise_alpha,
+        "negative_family_size": evidence.family_size,
+        "negative_confidence_level": evidence.adjusted_two_sided_confidence_level,
+        "negative_bootstrap_lower": evidence.bootstrap.lower,
+        "negative_bootstrap_upper": evidence.bootstrap.upper,
+        "negative_bootstrap_resamples": evidence.bootstrap.resamples,
+        "negative_bootstrap_seed": evidence.bootstrap.seed,
+        "negative_decisive": evidence.decisive_negative,
+    }
+
+
+def _phase5_decision_payload(
+    manifest: RunManifest,
+    finalization: RunFinalization,
+    turns: tuple[StoredTurn, ...],
+    analysis: StoredScientificAnalysis,
+) -> dict[str, object]:
+    """Return the complete compact confirmatory decision identity and evidence."""
+
+    accounting = finalization.execution_accounting
+    if accounting is None:
+        raise ValueError("confirmatory closeout lacks durable execution accounting")
+    result = analysis.result
+    return {
+        "schema_version": 2,
+        "implementation_phase": 5,
+        "run_tier": "confirmatory",
+        "claim_scope": result.claim_scope,
+        "scientific_decision": result.decision.decision.value,
+        "reason_codes": tuple(reason.value for reason in result.decision.reason_codes),
+        "decision_rule_version": manifest.decision_rule_version,
+        "manifest_sha256": canonical_sha256(manifest),
+        "scientific_result_sha256": scientific_result_sha256(turns),
+        "analysis_manifest_sha256": canonical_sha256(analysis.manifest),
+        "analysis_finalization_sha256": canonical_sha256(analysis.finalization),
+        "confirmatory_analysis_contract_sha256": (manifest.confirmatory_analysis_contract_sha256),
+        "confirmatory_analysis_spec": result.confirmatory_analysis_spec.model_dump(mode="json"),
+        "confirmatory_analysis_spec_sha256": result.confirmatory_analysis_spec_sha256,
+        "prompt_family_by_sequence": dict(result.prompt_family_by_sequence),
+        "prompt_family_design_sha256": result.prompt_family_design_sha256,
+        "validated_negative_multiplicity_sha256": (result.validated_negative_multiplicity_sha256),
+        "scientific_identity_sha256": manifest.scientific_identity_sha256,
+        "preregistration_sha256": manifest.preregistration_sha256,
+        "static_selection_evidence_sha256": (manifest.static_selection_evidence_sha256),
+        "evaluation_input_sha256": result.input_sha256,
+        "evaluation_result_sha256": result.result_sha256,
+        "decision_input_sha256": result.decision.decision_input_sha256,
+        "provider_type": manifest.provider_identity.provider_type,
+        "provider_identity_id": manifest.provider_identity.identity_id,
+        "committed_turns": len(turns),
+        "execution_accounting": accounting.model_dump(mode="json"),
+        "coverage": result.coverage.model_dump(mode="json"),
+        "efficacy_comparisons": tuple(
+            comparison.model_dump(mode="json") for comparison in result.efficacy_comparisons
+        ),
+        "recovery": result.recovery.model_dump(mode="json"),
+        "persistent_state_attribution": result.attribution.model_dump(mode="json"),
+        "subgroup_effects": tuple(
+            effect.model_dump(mode="json") for effect in result.subgroup_effects
+        ),
+        "guardrails": tuple(guardrail.model_dump(mode="json") for guardrail in result.guardrails),
+        "limitations": tuple(
+            limitation.model_dump(mode="json") for limitation in result.limitations
+        ),
+        "statistics_call_count": result.statistics_call_count,
+        "database_integrity_verified": True,
+    }
+
+
 def _report_text(manifest: RunManifest, turns: tuple[StoredTurn, ...]) -> str:
     return (
         "# NeuraLLM Phase 2 Engineering Report\n\n"
@@ -672,6 +969,231 @@ def _phase4_report_text(manifest: RunManifest, turns: tuple[StoredTurn, ...]) ->
         "attribution control, not an efficacy or statistical comparison. Exact requests, "
         "responses, metrics, serialized neural states, causal traces, and commitment hashes "
         "remain in `run.sqlite3`; the other files are deterministic derived views.\n"
+    )
+
+
+def _model_backed_activity_lines(
+    manifest: RunManifest,
+    turns: tuple[StoredTurn, ...],
+) -> str:
+    magnitudes: dict[str, list[float]] = {}
+    for turn in turns:
+        if turn.policy_trace_json is None:
+            raise ValueError("model-backed activity evidence lacks a policy trace")
+        payload = json.loads(turn.policy_trace_json)
+        if not isinstance(payload, dict) or "action" not in payload:
+            raise ValueError("model-backed policy trace lacks its applied action")
+        action = ControllerAction.model_validate(payload["action"])
+        magnitudes.setdefault(turn.condition.policy_id, []).append(
+            normalized_action_magnitude(action, manifest.action_bounds)
+        )
+    return "\n".join(
+        f"- `{policy_id}` mean normalized action magnitude: "
+        f"`{sum(values) / len(values):.6f}`; nonzero turns: "
+        f"`{sum(value > 0.0 for value in values)}/{len(values)}`"
+        for policy_id, values in sorted(magnitudes.items())
+    )
+
+
+def _model_backed_nonscientific_report_text(
+    manifest: RunManifest,
+    finalization: RunFinalization,
+    turns: tuple[StoredTurn, ...],
+) -> str:
+    tier = _MODEL_BACKED_NONSCIENTIFIC_RULE_TIERS[manifest.decision_rule_version]
+    accounting = finalization.execution_accounting
+    if accounting is None:
+        raise ValueError("model-backed closeout lacks durable execution accounting")
+    tier_label = "Engineering smoke" if tier == "engineering_smoke" else "Development pilot"
+    return (
+        f"# NeuraLLM Model-Backed {tier_label} Report\n\n"
+        "## Engineering validity\n\n"
+        f"- Run tier: `{tier}`\n"
+        f"- Manifest SHA-256: `{canonical_sha256(manifest)}`\n"
+        f"- Scientific result SHA-256: `{scientific_result_sha256(turns)}`\n"
+        f"- Scientific identity SHA-256: `{manifest.scientific_identity_sha256}`\n"
+        f"- Provider type: `{manifest.provider_identity.provider_type}`\n"
+        f"- Planned logical generations: `{accounting.planned_logical_generations}`\n"
+        f"- Dispatched logical generations: `{accounting.dispatched_logical_generations}`\n"
+        f"- Successful responses: `{accounting.successful_responses}`\n"
+        f"- Uncertain dispatches: `{accounting.uncertain_dispatches}`\n"
+        f"- Committed logical generations: `{accounting.committed_logical_generations}`\n\n"
+        "## Controller activity\n\n"
+        f"{_model_backed_activity_lines(manifest, turns)}\n\n"
+        "## End-to-end efficacy\n\n"
+        "Not estimated. Engineering smoke and development pilot evidence cannot be promoted "
+        "to a confirmatory efficacy claim.\n\n"
+        "## Persistent-state attribution\n\n"
+        "The matched-history persistent/reset mechanism and exact causal pairing passed "
+        "structural reconstruction. A beneficial model-output attribution effect is not "
+        "estimated at this tier.\n\n"
+        "## Guardrail outcomes\n\n"
+        "- Exact five-arm schedule coverage: `pass`\n"
+        "- Provider identity stability in committed responses: `pass`\n"
+        "- Action-bound and causal-history reconstruction: `pass`\n"
+        "- Durable logical-generation accounting: `pass`\n\n"
+        "## Limitations\n\n"
+        f"This run used provider type `{manifest.provider_identity.provider_type}`. "
+        "No smoke or pilot result can select a final scientific state.\n\n"
+        "## Final decision\n\n"
+        "`scientific_decision` is `null`; this run is intentionally ineligible for the "
+        "confirmatory decision vocabulary.\n"
+    )
+
+
+def _phase5_effect_text(
+    estimate: float | None,
+    lower: float | None,
+    upper: float | None,
+) -> str:
+    if estimate is None or lower is None or upper is None:
+        return "inferential statistics unavailable"
+    return f"mean difference `{estimate:.6f}`, CI `[{lower:.6f}, {upper:.6f}]`"
+
+
+def _phase5_negative_evidence_text(evidence: NegativeSideEvidence | None) -> str:
+    """Render the separately adjusted evidence used by VALIDATED_NEGATIVE gates."""
+
+    if evidence is None:
+        return "adjusted negative-side evidence unavailable"
+    decisive = str(evidence.decisive_negative).lower()
+    return (
+        f"adjusted negative-side evidence `{evidence.gate_id}` via "
+        f"`{evidence.method_version}`: familywise alpha "
+        f"`{evidence.familywise_alpha:.6f}` across `{evidence.family_size}` gates, "
+        "adjusted two-sided confidence "
+        f"`{evidence.adjusted_two_sided_confidence_level:.6f}`, simultaneous CI "
+        f"`[{evidence.bootstrap.lower:.6f}, {evidence.bootstrap.upper:.6f}]`, "
+        f"practical threshold `{evidence.practical_effect_threshold:.6f}`, "
+        f"decisive negative `{decisive}`"
+    )
+
+
+def _phase5_confirmatory_report_text(
+    manifest: RunManifest,
+    finalization: RunFinalization,
+    turns: tuple[StoredTurn, ...],
+    analysis: StoredScientificAnalysis,
+) -> str:
+    """Render the seven exact scientific closeout sections."""
+
+    accounting = finalization.execution_accounting
+    if accounting is None:
+        raise ValueError("confirmatory report lacks durable execution accounting")
+    result = analysis.result
+    efficacy_lines = []
+    for comparison in result.efficacy_comparisons:
+        bootstrap = comparison.bootstrap
+        efficacy_lines.append(
+            f"- `{comparison.focal_policy_id}` vs `{comparison.comparator_policy_id}` "
+            f"({comparison.comparator_role.value}): `{comparison.status.value}`; "
+            + _phase5_effect_text(
+                comparison.mean_difference,
+                None if bootstrap is None else bootstrap.lower,
+                None if bootstrap is None else bootstrap.upper,
+            )
+            + "; "
+            + _phase5_negative_evidence_text(comparison.negative_side_evidence)
+            + "."
+        )
+    recovery_lines = [
+        f"- Recovery family: `{result.recovery.status.value}`; {result.recovery.detail}",
+        f"- Right-censored recovery units: focal "
+        f"`{result.recovery.right_censored_focal_units}`, serious comparators "
+        f"`{result.recovery.right_censored_comparator_units}`.",
+    ]
+    recovery_lines.extend(
+        f"- `{metric.metric_name.value}`: `{metric.status.value}`; "
+        f"{_phase5_effect_text(metric.estimate, metric.bootstrap.lower, metric.bootstrap.upper)}; "
+        f"{_phase5_negative_evidence_text(metric.negative_side_evidence)}."
+        for metric in result.recovery.metric_results
+    )
+    attribution = result.attribution
+    attribution_bootstrap = attribution.bootstrap
+    attribution_effect_text = _phase5_effect_text(
+        attribution.mean_difference,
+        None if attribution_bootstrap is None else attribution_bootstrap.lower,
+        None if attribution_bootstrap is None else attribution_bootstrap.upper,
+    )
+    attribution_lines = (
+        f"- `{attribution.focal_policy_id}` vs `{attribution.comparator_policy_id}`: "
+        f"`{attribution.status.value}`; "
+        f"{attribution_effect_text}; "
+        f"{_phase5_negative_evidence_text(attribution.negative_side_evidence)}.\n"
+        "- This matched-history reset comparison is attribution-only, excludes turn zero, "
+        "and is not an efficacy baseline or Holm-family member."
+    )
+    guardrail_lines = "\n".join(
+        f"- `{guardrail.name}` (`{guardrail.scope}`): `{guardrail.status.value}` — "
+        f"{guardrail.detail}"
+        for guardrail in sorted(
+            result.guardrails,
+            key=lambda guardrail: (guardrail.name, guardrail.scope),
+        )
+    )
+    limitation_lines = (
+        "\n".join(
+            f"- `{limitation.code}`: `{limitation.disposition.value}` — {limitation.detail}"
+            for limitation in result.limitations
+        )
+        if result.limitations
+        else "- No preregistered limitations were triggered."
+    )
+    efficacy_text = "\n".join(efficacy_lines)
+    recovery_text = "\n".join(recovery_lines)
+    subgroup_lines = []
+    for effect in result.subgroup_effects:
+        effect_text = _phase5_effect_text(
+            effect.bootstrap.estimate,
+            effect.bootstrap.lower,
+            effect.bootstrap.upper,
+        )
+        subgroup_lines.append(
+            f"- Subgroup `{effect.field_name}={effect.field_value}` vs "
+            f"`{effect.comparator_policy_id}`: `{effect.direction}`; {effect_text}."
+        )
+    subgroup_text = (
+        "\n".join(subgroup_lines)
+        if subgroup_lines
+        else "- No multi-level preregistered subgroup analysis was required."
+    )
+    reason_codes = ", ".join(f"`{reason.value}`" for reason in result.decision.reason_codes)
+    return (
+        "# NeuraLLM Phase 5 Confirmatory Scientific Report\n\n"
+        "## Engineering validity\n\n"
+        f"- Manifest SHA-256: `{canonical_sha256(manifest)}`\n"
+        f"- Scientific result SHA-256: `{scientific_result_sha256(turns)}`\n"
+        f"- Evaluation result SHA-256: `{result.result_sha256}`\n"
+        f"- Scientific identity SHA-256: `{manifest.scientific_identity_sha256}`\n"
+        f"- Preregistration SHA-256: `{manifest.preregistration_sha256}`\n"
+        "- Static-selection evidence SHA-256: "
+        f"`{manifest.static_selection_evidence_sha256}`\n"
+        "- Confirmatory analysis contract SHA-256: "
+        f"`{manifest.confirmatory_analysis_contract_sha256}`\n"
+        f"- Provider identity: `{manifest.provider_identity.identity_id}`\n"
+        f"- Exact matched coverage: `{result.coverage.exact}` "
+        f"(`{result.coverage.observed_count}/{result.coverage.expected_count}`)\n"
+        f"- Logical generations planned/dispatched/successful/committed: "
+        f"`{accounting.planned_logical_generations}/"
+        f"{accounting.dispatched_logical_generations}/"
+        f"{accounting.successful_responses}/"
+        f"{accounting.committed_logical_generations}`; uncertain: "
+        f"`{accounting.uncertain_dispatches}`\n"
+        f"- Persisted statistical computations: `{result.statistics_call_count}`\n\n"
+        "## Controller activity\n\n"
+        f"{_model_backed_activity_lines(manifest, turns)}\n\n"
+        "## End-to-end efficacy\n\n"
+        f"{efficacy_text}\n"
+        f"{recovery_text}\n"
+        f"{subgroup_text}\n\n"
+        "## Persistent-state attribution\n\n"
+        f"{attribution_lines}\n\n"
+        "## Guardrail outcomes\n\n"
+        f"{guardrail_lines}\n\n"
+        "## Limitations\n\n"
+        f"{limitation_lines}\n\n"
+        "## Final decision\n\n"
+        f"`{result.decision.decision.value}`. Reason codes: {reason_codes}.\n"
     )
 
 
@@ -747,37 +1269,6 @@ def _phase3_report_text(
     )
 
 
-def scientific_result_sha256(turns: tuple[StoredTurn, ...]) -> str:
-    """Hash only canonical committed scientific results, excluding run location/source state."""
-
-    if not turns:
-        raise ValueError("scientific result requires at least one committed turn")
-    evidence: list[dict[str, object]] = []
-    for turn in turns:
-        if (
-            turn.state is not TurnState.COMMITTED
-            or turn.response is None
-            or turn.metrics is None
-            or turn.policy_state_json is None
-            or turn.policy_trace_json is None
-            or turn.history_commitment_sha256 is None
-        ):
-            raise ValueError("scientific result contains incomplete turn evidence")
-        evidence.append(
-            {
-                "condition_id": turn.condition_id,
-                "request": turn.request,
-                "history_binding": turn.history,
-                "response": turn.response,
-                "metrics": turn.metrics,
-                "policy_state": json.loads(turn.policy_state_json),
-                "policy_trace": json.loads(turn.policy_trace_json),
-                "history_commitment_sha256": turn.history_commitment_sha256,
-            }
-        )
-    return canonical_sha256({"schema_version": 1, "turns": evidence})
-
-
 def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
     """Verify and export exactly the compact artifact set for a closed run."""
 
@@ -813,14 +1304,15 @@ def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
                 "finalized scientific result hash does not match the recomputed output"
             )
         analysis = store.get_analysis()
+        scientific_analysis = store.get_scientific_analysis()
         if manifest.decision_rule_version == _PHASE3_DECISION_RULE_VERSION:
-            if analysis is None:
+            if analysis is None or scientific_analysis is not None:
                 raise ValueError("Phase 3 run is missing finalized analysis evidence")
             if manifest.matched_history_policy_sources:
                 raise ValueError("Phase 3 run cannot declare matched-history policy sources")
         elif manifest.decision_rule_version == _PHASE4_DECISION_RULE_VERSION:
-            if analysis is not None:
-                raise ValueError("Phase 4 mechanism run cannot contain Phase 3 analysis")
+            if analysis is not None or scientific_analysis is not None:
+                raise ValueError("Phase 4 mechanism run cannot contain scientific analysis")
             if (
                 dict(manifest.matched_history_policy_sources)
                 != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES
@@ -831,10 +1323,48 @@ def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
                 turns,
                 store.list_turn_inputs(),
             )
-        elif analysis is not None:
-            raise ValueError("pre-Phase 3 run unexpectedly contains analysis evidence")
-        elif manifest.matched_history_policy_sources:
-            raise ValueError("pre-Phase 4 run unexpectedly declares matched-history policy sources")
+        elif manifest.decision_rule_version in _MODEL_BACKED_NONSCIENTIFIC_RULE_TIERS:
+            if analysis is not None or scientific_analysis is not None:
+                raise ValueError("smoke and pilot runs cannot contain scientific analysis")
+            if (
+                dict(manifest.matched_history_policy_sources)
+                != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES
+            ):
+                raise ValueError("model-backed run lacks its exact attribution edge")
+            expected_tier = _MODEL_BACKED_NONSCIENTIFIC_RULE_TIERS[manifest.decision_rule_version]
+            if manifest.run_tier != expected_tier:
+                raise ValueError("model-backed manifest has the wrong run tier")
+            if finalization.execution_accounting is None:
+                raise ValueError("model-backed run lacks durable execution accounting")
+            _validate_phase4_mechanism_evidence(
+                manifest,
+                turns,
+                store.list_turn_inputs(),
+            )
+        elif manifest.decision_rule_version == _CONFIRMATORY_DECISION_RULE_VERSION:
+            if analysis is not None or scientific_analysis is None:
+                raise ValueError("confirmatory run lacks its finalized scientific analysis")
+            if (
+                manifest.run_tier != "confirmatory"
+                or manifest.provider_identity.provider_type != "llama_cpp"
+                or not manifest.working_tree_clean
+                or dict(manifest.matched_history_policy_sources)
+                != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES
+                or finalization.execution_accounting is None
+            ):
+                raise ValueError("confirmatory manifest lacks its claim-eligible identity")
+            _validate_phase4_mechanism_evidence(
+                manifest,
+                turns,
+                store.list_turn_inputs(),
+            )
+        elif manifest.decision_rule_version == _PHASE2_DECISION_RULE_VERSION:
+            if analysis is not None or scientific_analysis is not None:
+                raise ValueError("Phase 2 run unexpectedly contains analysis evidence")
+            if manifest.matched_history_policy_sources:
+                raise ValueError("Phase 2 run unexpectedly declares matched-history sources")
+        else:
+            raise ValueError(f"unknown decision rule version: {manifest.decision_rule_version!r}")
         store.compact()
 
     result_rows = tuple(_result_row(turn) for turn in turns)
@@ -847,18 +1377,54 @@ def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
         decision = _phase4_decision_payload(manifest, turns)
         report = _phase4_report_text(manifest, turns)
         implementation_phase = 4
-    elif analysis is None:
+    elif manifest.decision_rule_version in _MODEL_BACKED_NONSCIENTIFIC_RULE_TIERS:
+        comparison_fields = _PHASE2_COMPARISON_FIELDS
+        comparison_rows = ()
+        decision = _model_backed_nonscientific_decision_payload(
+            manifest,
+            finalization,
+            turns,
+        )
+        report = _model_backed_nonscientific_report_text(
+            manifest,
+            finalization,
+            turns,
+        )
+        implementation_phase = 5
+    elif manifest.decision_rule_version == _CONFIRMATORY_DECISION_RULE_VERSION:
+        if scientific_analysis is None:
+            raise ValueError("confirmatory export lacks scientific analysis evidence")
+        comparison_fields = _PHASE5_COMPARISON_FIELDS
+        comparison_rows = _phase5_comparison_rows(scientific_analysis)
+        decision = _phase5_decision_payload(
+            manifest,
+            finalization,
+            turns,
+            scientific_analysis,
+        )
+        report = _phase5_confirmatory_report_text(
+            manifest,
+            finalization,
+            turns,
+            scientific_analysis,
+        )
+        implementation_phase = 5
+    elif manifest.decision_rule_version == _PHASE2_DECISION_RULE_VERSION:
         comparison_fields = _PHASE2_COMPARISON_FIELDS
         comparison_rows = ()
         decision = _decision_payload(manifest, turns)
         report = _report_text(manifest, turns)
         implementation_phase = 2
-    else:
+    elif manifest.decision_rule_version == _PHASE3_DECISION_RULE_VERSION:
+        if analysis is None:
+            raise ValueError("Phase 3 export lacks analysis evidence")
         comparison_fields = _PHASE3_COMPARISON_FIELDS
         comparison_rows = _phase3_comparison_rows(analysis)
         decision = _phase3_decision_payload(manifest, turns, analysis)
         report = _phase3_report_text(manifest, turns, analysis)
         implementation_phase = 3
+    else:
+        raise ValueError(f"unknown decision rule version: {manifest.decision_rule_version!r}")
     _write_atomic(output_directory / "manifest.json", canonical_json(manifest) + "\n")
     _write_atomic(output_directory / "results.csv", _csv_text(_RESULT_FIELDS, result_rows))
     _write_atomic(
@@ -877,6 +1443,11 @@ def export_closed_run(output_directory: Path) -> ArtifactExportSummary:
         implementation_phase=implementation_phase,
         phase3_baseline_evaluator_verdict=(
             None if analysis is None else analysis.result.verdict.value
+        ),
+        scientific_decision=(
+            None
+            if scientific_analysis is None
+            else scientific_analysis.result.decision.decision.value
         ),
     )
 

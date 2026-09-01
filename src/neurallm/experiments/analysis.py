@@ -22,6 +22,8 @@ from neurallm.evaluation import (
 )
 from neurallm.evaluation.contract import phase3_analysis_contract_sha256
 from neurallm.experiments.plan import PHASE3_DECISION_RULE_VERSION, ExperimentPlan
+from neurallm.metrics.base import MetricContext
+from neurallm.metrics.deterministic import compute_response_metrics
 from neurallm.storage import (
     AnalysisManifest,
     SQLiteRunStore,
@@ -54,6 +56,31 @@ def _trace_evidence(
     if not isinstance(raw_payload, dict) or not all(isinstance(key, str) for key in raw_payload):
         raise StoreInvariantError("committed policy trace is not a JSON object")
     payload: Mapping[str, object] = raw_payload
+    if payload.get("trace_schema_version") == "phase4-causal-applied-policy-trace-v1":
+        from neurallm.experiments.runner import CausalAppliedPolicyTrace
+
+        try:
+            trace = CausalAppliedPolicyTrace.model_validate(payload)
+        except ValueError as exc:
+            raise StoreInvariantError("causal policy trace fails its declared schema") from exc
+        if canonical_json(trace) != turn.policy_trace_json:
+            raise StoreInvariantError("causal policy trace is not canonical JSON")
+        if (
+            trace.policy_id != turn.condition.policy_id
+            or trace.turn_index != turn.condition.turn_index
+        ):
+            raise StoreInvariantError("causal policy trace targets another condition")
+        application = trace.action_application
+        if trace.action != application.step_clamped_action:
+            raise StoreInvariantError("applied trace action does not match its clamped action")
+        if application.final_decoding_parameters != turn.request.decoding_parameters:
+            raise StoreInvariantError("applied trace parameters do not match the provider request")
+        return (
+            _normalized_action_magnitude(trace.action, bounds),
+            bounds.contains(application.raw_action),
+            application.saturation.any_saturation,
+            trace.observation_has_previous_response,
+        )
     if set(payload) != {
         "action",
         "action_application",
@@ -211,7 +238,7 @@ def evaluation_records_from_store(
         condition_id = planned.condition.condition_id
         turn = stored_turns[condition_id]
         evidence = input_evidence[condition_id]
-        if turn.state is not TurnState.COMMITTED or turn.metrics is None:
+        if turn.state is not TurnState.COMMITTED or turn.metrics is None or turn.response is None:
             raise StoreInvariantError("Phase 3 evaluation requires committed metric evidence")
         if turn.condition != planned.condition or turn.request.prompt != planned.prompt:
             raise StoreInvariantError("stored Phase 3 turn differs from its frozen plan")
@@ -237,6 +264,17 @@ def evaluation_records_from_store(
         if stored_history_present != (turn.condition.turn_index > 0):
             raise StoreInvariantError("stored history presence disagrees with the logical turn")
         metrics = turn.metrics
+        reconstructed_metrics = compute_response_metrics(
+            MetricContext(
+                prompt_case_id=evidence.prompt_case_id,
+                prompt_family=evidence.prompt_family,
+                prompt=planned.prompt,
+                response_text=turn.response.text,
+                validator=evidence.validator,
+            )
+        )
+        if metrics != reconstructed_metrics:
+            raise StoreInvariantError("stored evaluation metrics do not reconstruct exactly")
         records.append(
             TurnEvaluationRecord(
                 dataset_sha256=plan.dataset_hash,

@@ -322,6 +322,18 @@ class CoverageResult(_StrictFrozenModel):
     unexpected_keys: tuple[TurnRecordKey, ...] = ()
     duplicate_keys: tuple[TurnRecordKey, ...] = ()
 
+    @model_validator(mode="after")
+    def _validate_exact_flag(self) -> Self:
+        reconstructed_exact = (
+            self.expected_count == self.observed_count
+            and not self.missing_keys
+            and not self.unexpected_keys
+            and not self.duplicate_keys
+        )
+        if self.exact != reconstructed_exact:
+            raise ValueError("coverage exact flag does not match its count and key evidence")
+        return self
+
 
 class GuardrailResult(_StrictFrozenModel):
     """One machine-readable guardrail result."""

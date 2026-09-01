@@ -23,7 +23,10 @@ from tests.storage.helpers import complete_request, make_manifest, make_request
 def _closed_run(path: Path) -> Path:
     path.mkdir()
     provider = FakeProvider()
-    with SQLiteRunStore(path / "run.sqlite3", make_manifest(provider.provider_identity)) as store:
+    manifest = make_manifest(provider.provider_identity).model_copy(
+        update={"decision_rule_version": "phase2-no-scientific-decision-v1"}
+    )
+    with SQLiteRunStore(path / "run.sqlite3", manifest) as store:
         request = make_request(provider.provider_identity)
         complete_request(store, provider, request)
         store.finalize_run(

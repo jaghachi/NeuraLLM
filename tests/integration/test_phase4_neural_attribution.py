@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from neurallm.control import (
     NeuralPolicyState,
+    NeuralPolicyTrace,
     NeuralSubstrateState,
     PolicyState,
     PolicyTrace,
 )
 from neurallm.domain.models import (
+    ActionBounds,
     ControllerAction,
     DecodingParameters,
     PromptFeatures,
@@ -33,7 +36,7 @@ from neurallm.providers.base import GenerationRequest, GenerationResponse
 from neurallm.providers.fake import FakeProvider
 from neurallm.reporting import export_closed_run, scientific_result_sha256
 from neurallm.reporting.artifacts import _validate_phase4_mechanism_evidence
-from neurallm.storage import SQLiteRunStore, TurnState
+from neurallm.storage import SQLiteRunStore, StoredTurn, TurnState
 from tests.storage.helpers import make_metrics
 
 _PERSISTENT = "neural_persistent"
@@ -103,6 +106,51 @@ def _completed_phase4_run(root: Path) -> tuple[Path, Path]:
     with SQLiteRunStore(database) as store:
         assert store.get_finalization() is not None
     return run_directory, database
+
+
+def _rehash_neural_trace(
+    trace: NeuralPolicyTrace,
+    **updates: object,
+) -> NeuralPolicyTrace:
+    updated = trace.model_copy(update=updates)
+    mechanism_sha256 = canonical_sha256(
+        {
+            "turn_index": updated.turn_index,
+            "observation_encoding": updated.observation_encoding,
+            "stored_substrate_state": updated.stored_substrate_state,
+            "effective_substrate_state": updated.effective_substrate_state,
+            "substrate_transition": updated.substrate_transition,
+            "decoder_version": updated.decoder_version,
+            "action_magnitude_version": updated.action_magnitude_version,
+            "decoder_activation": updated.decoder_activation,
+            "action": updated.action,
+            "action_magnitude": updated.action_magnitude,
+            "state_reset_applied": updated.state_reset_applied,
+        }
+    )
+    return updated.model_copy(update={"mechanism_sha256": mechanism_sha256})
+
+
+def _replace_causal_trace(
+    turn: StoredTurn,
+    *,
+    outer_updates: dict[str, object] | None = None,
+    neural_updates: dict[str, object] | None = None,
+) -> StoredTurn:
+    assert turn.policy_trace_json is not None
+    trace = CausalAppliedPolicyTrace.model_validate_json(turn.policy_trace_json)
+    if neural_updates:
+        trace = trace.model_copy(
+            update={
+                "policy_trace": _rehash_neural_trace(
+                    trace.policy_trace,
+                    **neural_updates,
+                )
+            }
+        )
+    if outer_updates:
+        trace = trace.model_copy(update=outer_updates)
+    return replace(turn, policy_trace_json=canonical_json(trace))
 
 
 def _tamper_terminal_action_application(database: Path, field: str) -> None:
@@ -673,6 +721,274 @@ def test_finalized_phase4_export_reconstructs_neural_encoding_from_turn_inputs(
 
     with pytest.raises(ValueError, match="trace does not match its prompt-side evidence"):
         export_closed_run(run_directory)
+
+
+@pytest.mark.parametrize(
+    ("corruption", "message"),
+    (
+        ("schema", "current database schema"),
+        ("policy_hashes", "exactly the persistent and reset policies"),
+        ("incomplete_turn", "complete committed mechanism evidence"),
+        ("outer_identity", "trace identity does not match"),
+        ("nested_identity", "nested neural trace has the wrong identity"),
+        ("request_parameters", "decoding parameters do not match"),
+        ("step_action", "does not bind its step-clamped action"),
+        ("raw_action", "does not bind its raw controller action"),
+        ("history_access", "wrong history-access mode"),
+        ("state_turn", "stored neural state has the wrong logical turn"),
+        ("state_seed", "stored neural state has the wrong controller seed"),
+        ("state_bounds", "stored neural state has the wrong action bounds"),
+        ("state_substrate", "stored neural state does not match the traced transition"),
+        ("substrate_equation", "does not reproduce the neural substrate equations"),
+        ("action_magnitude", "wrong normalized action magnitude"),
+        ("decoder", "does not reproduce the declared action decoder"),
+        ("turn_zero_history", "turn zero must carry explicit null history"),
+        ("turn_zero_initial_state", "turn zero does not use the declared initial state"),
+        ("later_history_missing", "later turn lacks its focal history binding"),
+        ("wrong_focal_prior", "history does not bind the focal prior turn"),
+        ("causal_commitment", "causal trace does not match its committed focal history"),
+        ("stored_substrate", "did not load the committed focal substrate"),
+        ("paired_coverage", "attribution arms lack exact paired coverage"),
+        ("current_prompt", "attribution pair has mismatched current prompts"),
+        ("turn_zero_equivalence", "arms are not equivalent at turn zero"),
+        ("paired_history", "arms do not share exact focal inputs"),
+        ("persistent_intervention", "persistent arm contains an undeclared intervention"),
+        ("reset_intervention", "reset arm did not apply the declared substrate reset"),
+    ),
+)
+def test_phase4_export_rejects_specific_mechanism_evidence_corruption(
+    corruption: str,
+    message: str,
+    tmp_path: Path,
+) -> None:
+    _run_directory, database = _completed_phase4_run(tmp_path)
+    with SQLiteRunStore(database) as store:
+        manifest = store.get_manifest()
+        turns = list(store.list_turns())
+        turn_inputs = list(store.list_turn_inputs())
+    assert manifest is not None
+
+    def locate(policy_id: str, turn_index: int) -> int:
+        return next(
+            index
+            for index, turn in enumerate(turns)
+            if turn.condition.policy_id == policy_id and turn.condition.turn_index == turn_index
+        )
+
+    persistent_zero_index = locate(_PERSISTENT, 0)
+    reset_zero_index = locate(_RESET, 0)
+    persistent_one_index = locate(_PERSISTENT, 1)
+    reset_one_index = locate(_RESET, 1)
+    persistent_two_index = locate(_PERSISTENT, 2)
+    persistent_zero = turns[persistent_zero_index]
+    reset_zero = turns[reset_zero_index]
+    persistent_one = turns[persistent_one_index]
+    reset_one = turns[reset_one_index]
+
+    if corruption == "schema":
+        manifest = manifest.model_copy(update={"database_schema_version": 1})
+    elif corruption == "policy_hashes":
+        manifest = manifest.model_copy(update={"policy_config_hashes": {_PERSISTENT: "f" * 64}})
+    elif corruption == "incomplete_turn":
+        turns[persistent_zero_index] = replace(persistent_zero, response=None)
+    elif corruption == "outer_identity":
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            outer_updates={"policy_id": _RESET},
+        )
+    elif corruption == "nested_identity":
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            neural_updates={"policy_id": _RESET},
+        )
+    elif corruption == "request_parameters":
+        assert persistent_zero.policy_trace_json is not None
+        trace = CausalAppliedPolicyTrace.model_validate_json(persistent_zero.policy_trace_json)
+        final_parameters = trace.action_application.final_decoding_parameters
+        drifted_parameters = final_parameters.model_copy(
+            update={"temperature": final_parameters.temperature + 0.01}
+        )
+        application = trace.action_application.model_copy(
+            update={"final_decoding_parameters": drifted_parameters}
+        )
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            outer_updates={"action_application": application},
+        )
+    elif corruption == "step_action":
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            outer_updates={
+                "action": ControllerAction(
+                    temperature_delta=0.01,
+                    top_p_delta=0.0,
+                    top_k_delta=0,
+                    presence_penalty_delta=0.0,
+                )
+            },
+        )
+    elif corruption == "raw_action":
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            neural_updates={
+                "action": ControllerAction(
+                    temperature_delta=0.01,
+                    top_p_delta=0.0,
+                    top_k_delta=0,
+                    presence_penalty_delta=0.0,
+                )
+            },
+        )
+    elif corruption == "history_access":
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            outer_updates={"history_access": "matched_focal_previous_response"},
+        )
+    elif corruption.startswith("state_"):
+        assert persistent_zero.policy_state_json is not None
+        state = NeuralPolicyState.model_validate_json(persistent_zero.policy_state_json)
+        if corruption == "state_turn":
+            state = state.model_copy(update={"next_turn_index": state.next_turn_index + 1})
+        elif corruption == "state_seed":
+            state = state.model_copy(update={"controller_seed": state.controller_seed + 1})
+        elif corruption == "state_bounds":
+            state = state.model_copy(
+                update={"action_bounds": ActionBounds(temperature_delta=(-0.05, 0.05))}
+            )
+        elif corruption == "state_substrate":
+            persistent_two = turns[persistent_two_index]
+            assert persistent_two.policy_state_json is not None
+            state = NeuralPolicyState.model_validate_json(
+                persistent_two.policy_state_json
+            ).model_copy(
+                update={
+                    "substrate": NeuralSubstrateState(
+                        excitation=1.0,
+                        inhibition=1.0,
+                        adaptation=1.0,
+                        fatigue=1.0,
+                        context=1.0,
+                    )
+                }
+            )
+        target_index = (
+            persistent_two_index if corruption == "state_substrate" else persistent_zero_index
+        )
+        turns[target_index] = replace(
+            turns[target_index],
+            policy_state_json=canonical_json(state),
+        )
+    elif corruption == "substrate_equation":
+        assert persistent_zero.policy_trace_json is not None
+        trace = CausalAppliedPolicyTrace.model_validate_json(persistent_zero.policy_trace_json)
+        transition = trace.policy_trace.substrate_transition
+        seed_drive = 0.0 if transition.seed_drive != 0.0 else 0.001
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            neural_updates={
+                "substrate_transition": transition.model_copy(update={"seed_drive": seed_drive})
+            },
+        )
+    elif corruption == "action_magnitude":
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            neural_updates={"action_magnitude": 0.5},
+        )
+    elif corruption == "decoder":
+        assert persistent_zero.policy_trace_json is not None
+        trace = CausalAppliedPolicyTrace.model_validate_json(persistent_zero.policy_trace_json)
+        activation = trace.policy_trace.decoder_activation
+        temperature = 0.0 if activation.temperature != 0.0 else 0.5
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            neural_updates={
+                "decoder_activation": activation.model_copy(update={"temperature": temperature})
+            },
+        )
+    elif corruption == "turn_zero_history":
+        assert persistent_one.history is not None
+        turns[persistent_zero_index] = replace(
+            persistent_zero,
+            history=persistent_one.history,
+        )
+    elif corruption == "turn_zero_initial_state":
+        turns[persistent_zero_index] = _replace_causal_trace(
+            persistent_zero,
+            neural_updates={"state_reset_applied": True},
+        )
+    elif corruption == "later_history_missing":
+        turns[persistent_one_index] = replace(persistent_one, history=None)
+    elif corruption == "wrong_focal_prior":
+        assert persistent_one.history is not None
+        turns[persistent_one_index] = replace(
+            persistent_one,
+            history=persistent_one.history.model_copy(
+                update={"previous_condition_id": reset_zero.condition_id}
+            ),
+        )
+    elif corruption == "causal_commitment":
+        turns[persistent_one_index] = _replace_causal_trace(
+            persistent_one,
+            outer_updates={"history_source_condition_id": reset_zero.condition_id},
+        )
+    elif corruption == "stored_substrate":
+        turns[persistent_one_index] = _replace_causal_trace(
+            persistent_one,
+            neural_updates={
+                "stored_substrate_state": NeuralSubstrateState(
+                    excitation=1.0,
+                    inhibition=1.0,
+                    adaptation=1.0,
+                    fatigue=1.0,
+                    context=1.0,
+                )
+            },
+        )
+    elif corruption == "paired_coverage":
+        reset_two_index = locate(_RESET, 2)
+        reset_two_id = turns[reset_two_index].condition_id
+        turns.pop(reset_two_index)
+        turn_inputs = [
+            evidence for evidence in turn_inputs if evidence.condition_id != reset_two_id
+        ]
+    elif corruption == "current_prompt":
+        turns[reset_one_index] = replace(
+            reset_one,
+            request=reset_one.request.model_copy(update={"prompt": "confounded prompt"}),
+        )
+    elif corruption == "turn_zero_equivalence":
+        assert reset_zero.response is not None
+        turns[reset_zero_index] = replace(
+            reset_zero,
+            response=reset_zero.response.model_copy(update={"text": "different response"}),
+        )
+    elif corruption == "paired_history":
+        assert reset_one.history is not None
+        turns[reset_one_index] = replace(
+            reset_one,
+            history=reset_one.history.model_copy(
+                update={"previous_history_commitment_sha256": "f" * 64}
+            ),
+        )
+    elif corruption == "persistent_intervention":
+        turns[persistent_one_index] = _replace_causal_trace(
+            persistent_one,
+            neural_updates={"state_reset_applied": True},
+        )
+    elif corruption == "reset_intervention":
+        turns[reset_one_index] = _replace_causal_trace(
+            reset_one,
+            neural_updates={"state_reset_applied": False},
+        )
+    else:
+        raise AssertionError(f"unsupported corruption: {corruption}")
+
+    with pytest.raises(ValueError, match=message):
+        _validate_phase4_mechanism_evidence(
+            manifest,
+            tuple(turns),
+            tuple(turn_inputs),
+        )
 
 
 def test_finalized_phase4_export_rejects_an_extra_committed_policy_turn(

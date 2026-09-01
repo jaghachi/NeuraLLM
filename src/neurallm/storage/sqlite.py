@@ -12,19 +12,35 @@ from typing import Any, TypeVar, cast
 from pydantic import BaseModel, ValidationError
 
 from neurallm.control.policy import PolicyState, PolicyTrace
-from neurallm.domain.models import ExperimentCondition, ResponseMetrics, RunManifest
+from neurallm.domain.models import ActionBounds, ExperimentCondition, ResponseMetrics, RunManifest
 from neurallm.domain.serialization import canonical_json, canonical_sha256
+from neurallm.evaluation.aggregation import aggregate_matched_units, validate_exact_coverage
+from neurallm.evaluation.attribution import PersistentStateAttributionResult
+from neurallm.evaluation.confirmatory import ConfirmatoryEvaluationResult
 from neurallm.evaluation.contract import phase3_analysis_contract_sha256
 from neurallm.evaluation.models import (
+    CoverageResult,
+    DatasetPurpose,
+    EvaluationSpec,
+    ExpectedEvaluationDesign,
     GuardrailResult,
     PairwiseComparisonResult,
     Phase3EvaluationResult,
+    SequenceExpectation,
+    TurnEvaluationRecord,
 )
+from neurallm.evaluation.scientific import (
+    EfficacyComparisonResult,
+    ScientificGuardrailResult,
+)
+from neurallm.metrics import MetricContext, compute_response_metrics
 from neurallm.providers.base import (
     GenerationRequest,
     GenerationResponse,
     effective_parameters_match_request,
 )
+from neurallm.providers.llama_cpp import require_llama_cpp_provider_binding
+from neurallm.providers.llama_cpp_evidence import require_llama_cpp_generation_binding
 from neurallm.storage.errors import (
     DuplicateLogicalRequestError,
     HistoryMismatchError,
@@ -44,17 +60,172 @@ from neurallm.storage.models import (
     AnalysisFinalization,
     AnalysisManifest,
     CommittedHistory,
+    DurableExecutionAccounting,
     HistoryBinding,
     ResumeAction,
     RunFinalization,
+    ScientificAnalysisFinalization,
+    ScientificAnalysisManifest,
     StoredAnalysis,
+    StoredScientificAnalysis,
     StoredTurn,
     TurnInputEvidence,
     TurnState,
 )
+from neurallm.storage.provenance import scientific_result_sha256
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 PolicyStateT = TypeVar("PolicyStateT", bound=PolicyState)
+
+_PHASE3_ANALYSIS_IMPLEMENTATION_VERSION = "phase3-analysis-storage-v1"
+_LEGACY_SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION = "confirmatory-scientific-analysis-storage-v1"
+_SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION = "confirmatory-scientific-analysis-storage-v2"
+_SUPPORTED_ANALYSIS_IMPLEMENTATION_VERSIONS = {
+    _PHASE3_ANALYSIS_IMPLEMENTATION_VERSION,
+    _SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION,
+}
+_SCIENTIFIC_UNIT_POLICY_IDS = frozenset(
+    {"best_static", "heuristic_adaptive", "neural_persistent", "random_matched"}
+)
+_SCIENTIFIC_MODEL_BACKED_POLICY_IDS = _SCIENTIFIC_UNIT_POLICY_IDS | {
+    "neural_matched_history_state_reset"
+}
+
+
+def _stored_scientific_records(
+    turns: tuple[StoredTurn, ...],
+    *,
+    dataset_sha256: str,
+    action_bounds: ActionBounds,
+) -> tuple[TurnEvaluationRecord, ...]:
+    """Reconstruct raw model-backed evaluator records from committed turn metrics."""
+
+    records: list[TurnEvaluationRecord] = []
+    for turn in turns:
+        condition = turn.condition
+        if condition.policy_id not in _SCIENTIFIC_MODEL_BACKED_POLICY_IDS:
+            continue
+        metrics = turn.metrics
+        if turn.state is not TurnState.COMMITTED or metrics is None:
+            raise ValueError("scientific unit evidence requires committed turn metrics")
+        task_score = metrics.task_score.value
+        instruction_adherence = metrics.instruction_adherence.value
+        response_length_tokens = metrics.response_length_tokens.value
+        repetition_ratio = metrics.repetition_ratio.value
+        if (
+            task_score is None
+            or instruction_adherence is None
+            or response_length_tokens is None
+            or repetition_ratio is None
+        ):
+            raise ValueError("scientific unit evidence requires every primary metric")
+        from neurallm.experiments.analysis import _trace_evidence
+
+        try:
+            (
+                action_magnitude,
+                action_within_bounds,
+                action_saturated,
+                observation_has_previous_response,
+            ) = _trace_evidence(turn, action_bounds)
+        except StoreInvariantError as exc:
+            raise ValueError(f"scientific action evidence is invalid: {exc}") from exc
+        if (turn.history is not None) != (condition.turn_index > 0):
+            raise ValueError("scientific history evidence disagrees with the logical turn")
+        previous_commitment = (
+            None
+            if not observation_has_previous_response or turn.history is None
+            else turn.history.previous_history_commitment_sha256
+        )
+        records.append(
+            TurnEvaluationRecord(
+                dataset_sha256=dataset_sha256,
+                prompt_sequence_id=condition.prompt_sequence_id,
+                turn_index=condition.turn_index,
+                policy_id=condition.policy_id,
+                model_seed=condition.model_seed,
+                controller_seed=condition.controller_seed,
+                provider_identity_id=condition.provider_identity_id,
+                has_previous_response=observation_has_previous_response,
+                previous_history_commitment_sha256=previous_commitment,
+                task_score=float(task_score),
+                instruction_adherence=float(instruction_adherence),
+                response_length_tokens=int(response_length_tokens),
+                repetition_ratio=float(repetition_ratio),
+                action_magnitude=action_magnitude,
+                action_within_bounds=action_within_bounds,
+                action_saturated=action_saturated,
+            )
+        )
+    return tuple(records)
+
+
+def _stored_scientific_unit_metrics(
+    records: tuple[TurnEvaluationRecord, ...],
+) -> dict[tuple[str, int, str], tuple[float, float, float, float]]:
+    """Aggregate the four efficacy-arm raw metrics at the frozen matched unit."""
+
+    outcomes = aggregate_matched_units(
+        tuple(record for record in records if record.policy_id in _SCIENTIFIC_UNIT_POLICY_IDS)
+    )
+    return {
+        (
+            outcome.unit_key.prompt_sequence_id,
+            outcome.unit_key.model_seed,
+            outcome.policy_id,
+        ): (
+            outcome.task_score,
+            outcome.instruction_adherence,
+            outcome.repetition_ratio,
+            outcome.response_length_tokens,
+        )
+        for outcome in outcomes
+    }
+
+
+def _source_scientific_guardrails(
+    records: tuple[TurnEvaluationRecord, ...],
+    *,
+    run_manifest: RunManifest,
+    dataset_seal_sha256: str,
+    evaluation_spec: EvaluationSpec,
+) -> tuple[CoverageResult, tuple[ScientificGuardrailResult, ...]]:
+    """Recompute claim-bearing guardrails from committed source evidence."""
+
+    if (
+        evaluation_spec.focal_policy_id != "neural_persistent"
+        or evaluation_spec.required_serious_comparator_ids != ("best_static", "heuristic_adaptive")
+        or evaluation_spec.negative_control_policy_ids != ("random_matched",)
+    ):
+        raise ValueError("confirmatory evaluation spec has the wrong frozen policy roles")
+    sequence_indexes: dict[str, set[int]] = {}
+    for record in records:
+        sequence_indexes.setdefault(record.prompt_sequence_id, set()).add(record.turn_index)
+    if not sequence_indexes or any(
+        indexes != set(range(len(indexes))) for indexes in sequence_indexes.values()
+    ):
+        raise ValueError("committed sequence turn indexes are not contiguous from zero")
+    design = ExpectedEvaluationDesign(
+        dataset_purpose=DatasetPurpose.EVALUATION,
+        dataset_sha256=run_manifest.dataset_hash,
+        dataset_seal_sha256=dataset_seal_sha256,
+        provider_identity_id=run_manifest.provider_identity.identity_id,
+        sequences=tuple(
+            SequenceExpectation(prompt_sequence_id=sequence_id, turn_count=len(indexes))
+            for sequence_id, indexes in sorted(sequence_indexes.items())
+        ),
+        model_seeds=run_manifest.seed_schedule.model_seeds,
+        controller_seeds=run_manifest.seed_schedule.controller_seeds,
+        policy_ids=tuple(run_manifest.policy_config_hashes),
+    )
+    coverage = validate_exact_coverage(records, design)
+    if not coverage.exact:
+        raise ValueError("committed turns do not cover the exact confirmatory design")
+
+    from neurallm.experiments.scientific_analysis import _scientific_guardrails_from_records
+
+    return coverage, _scientific_guardrails_from_records(records, design, evaluation_spec)
+
 
 _EXPECTED_SCHEMA_OBJECTS = {
     ("table", "analysis_decision"),
@@ -216,6 +387,7 @@ class SQLiteRunStore:
         self,
         expected_condition_ids: tuple[str, ...],
         scientific_result_sha256: str,
+        execution_accounting: DurableExecutionAccounting | None = None,
     ) -> RunFinalization:
         """Atomically close an exact, fully committed run schedule, idempotently."""
 
@@ -225,6 +397,10 @@ class SQLiteRunStore:
             raise TypeError("expected_condition_ids must be a tuple of strings")
         if not isinstance(scientific_result_sha256, str):
             raise TypeError("scientific_result_sha256 must be a string")
+        if execution_accounting is not None and not isinstance(
+            execution_accounting, DurableExecutionAccounting
+        ):
+            raise TypeError("execution_accounting must be DurableExecutionAccounting or None")
         canonical_condition_ids = tuple(sorted(expected_condition_ids))
         with self._transaction():
             manifest = self._require_manifest()
@@ -233,6 +409,7 @@ class SQLiteRunStore:
                 expected_condition_count=len(canonical_condition_ids),
                 manifest_sha256=canonical_sha256(manifest),
                 scientific_result_sha256=scientific_result_sha256,
+                execution_accounting=execution_accounting,
             )
             self._validate_finalization_against_store(finalization, stored=False)
             finalization_json = canonical_json(finalization)
@@ -445,6 +622,174 @@ class SQLiteRunStore:
                     )
         return finalization
 
+    def persist_scientific_analysis(
+        self,
+        manifest: ScientificAnalysisManifest,
+        result: ConfirmatoryEvaluationResult,
+        *,
+        context: object,
+    ) -> ScientificAnalysisFinalization:
+        """Atomically persist one complete confirmatory analysis, idempotently."""
+
+        if not isinstance(manifest, ScientificAnalysisManifest):
+            raise TypeError("manifest must be a ScientificAnalysisManifest")
+        if not isinstance(result, ConfirmatoryEvaluationResult):
+            raise TypeError("result must be a ConfirmatoryEvaluationResult")
+        from neurallm.experiments.scientific_analysis import ConfirmatoryAnalysisContext
+
+        if not isinstance(context, ConfirmatoryAnalysisContext):
+            raise TypeError("context must be a ConfirmatoryAnalysisContext")
+
+        comparison_members: tuple[BaseModel, ...] = (
+            *result.efficacy_comparisons,
+            result.attribution,
+        )
+        if len(result.efficacy_comparisons) != 3 or len(comparison_members) != 4:
+            raise StoreInvariantError(
+                "scientific analysis requires exactly three efficacy comparisons and attribution"
+            )
+        comparison_payloads = tuple(
+            sorted(
+                (
+                    (canonical_sha256(member), canonical_json(member), member)
+                    for member in comparison_members
+                ),
+                key=lambda payload: payload[0],
+            )
+        )
+        comparison_hashes = tuple(payload[0] for payload in comparison_payloads)
+        if len(comparison_hashes) != len(set(comparison_hashes)):
+            raise StoreInvariantError("scientific analysis contains duplicate comparison evidence")
+
+        guardrails = self._scientific_guardrails(result, stored=False)
+        guardrail_payloads = tuple(
+            sorted(
+                (
+                    (canonical_sha256(guardrail), canonical_json(guardrail), guardrail)
+                    for guardrail in guardrails
+                ),
+                key=lambda payload: payload[0],
+            )
+        )
+        guardrail_hashes = tuple(payload[0] for payload in guardrail_payloads)
+
+        with self._transaction():
+            self._validate_scientific_analysis_binding(
+                manifest,
+                result,
+                stored=False,
+                context=context,
+            )
+            manifest_json = canonical_json(manifest)
+            manifest_sha256 = canonical_sha256(manifest)
+            manifest_row = self._connection.execute(
+                """
+                SELECT manifest_json, manifest_sha256
+                FROM analysis_manifest
+                WHERE singleton_id = 1
+                """
+            ).fetchone()
+            if manifest_row is None:
+                self._connection.execute(
+                    """
+                    INSERT INTO analysis_manifest(
+                        singleton_id,
+                        manifest_json,
+                        manifest_sha256
+                    ) VALUES (1, ?, ?)
+                    """,
+                    (manifest_json, manifest_sha256),
+                )
+            elif (
+                self._required_text(manifest_row, "manifest_json") != manifest_json
+                or self._required_text(manifest_row, "manifest_sha256") != manifest_sha256
+            ):
+                raise StoreInvariantError("run store is bound to another analysis manifest")
+
+            for comparison_id, result_json, _ in comparison_payloads:
+                self._persist_analysis_member(
+                    table="comparison_results",
+                    id_column="comparison_id",
+                    member_id=comparison_id,
+                    result_json=result_json,
+                )
+            for guardrail_id, result_json, _ in guardrail_payloads:
+                self._persist_analysis_member(
+                    table="guardrail_results",
+                    id_column="guardrail_id",
+                    member_id=guardrail_id,
+                    result_json=result_json,
+                )
+
+            decision_json = canonical_json(result)
+            decision_sha256 = canonical_sha256(result)
+            decision_row = self._connection.execute(
+                """
+                SELECT decision_json, decision_sha256
+                FROM analysis_decision
+                WHERE singleton_id = 1
+                """
+            ).fetchone()
+            if decision_row is None:
+                self._connection.execute(
+                    """
+                    INSERT INTO analysis_decision(
+                        singleton_id,
+                        decision_json,
+                        decision_sha256
+                    ) VALUES (1, ?, ?)
+                    """,
+                    (decision_json, decision_sha256),
+                )
+            elif (
+                self._required_text(decision_row, "decision_json") != decision_json
+                or self._required_text(decision_row, "decision_sha256") != decision_sha256
+            ):
+                raise StoreInvariantError(
+                    "scientific analysis decision is already bound to another result"
+                )
+
+            finalization = ScientificAnalysisFinalization(
+                analysis_manifest_sha256=manifest_sha256,
+                evaluation_result_sha256=result.result_sha256,
+                decision_sha256=decision_sha256,
+                comparison_result_sha256s=comparison_hashes,
+                guardrail_result_sha256s=guardrail_hashes,
+                guardrail_count=len(guardrail_hashes),
+            )
+            finalization_json = canonical_json(finalization)
+            finalization_sha256 = canonical_sha256(finalization)
+            finalization_row = self._connection.execute(
+                """
+                SELECT finalization_json, finalization_sha256
+                FROM analysis_finalization
+                WHERE singleton_id = 1
+                """
+            ).fetchone()
+            if finalization_row is None:
+                self._connection.execute(
+                    """
+                    INSERT INTO analysis_finalization(
+                        singleton_id,
+                        finalization_json,
+                        finalization_sha256
+                    ) VALUES (1, ?, ?)
+                    """,
+                    (finalization_json, finalization_sha256),
+                )
+            else:
+                stored_finalization = self._decode_model(
+                    ScientificAnalysisFinalization,
+                    self._required_text(finalization_row, "finalization_json"),
+                    self._required_text(finalization_row, "finalization_sha256"),
+                    "scientific analysis finalization",
+                )
+                if stored_finalization != finalization:
+                    raise StoreInvariantError(
+                        "scientific analysis is already finalized with different evidence"
+                    )
+        return finalization
+
     def get_analysis(self) -> StoredAnalysis | None:
         """Load and cross-validate the finalized Phase 3 analysis, if present."""
 
@@ -468,6 +813,10 @@ class SQLiteRunStore:
             )
             if any(counts):
                 raise StoreCorruptionError("analysis evidence exists without a manifest")
+            return None
+
+        implementation_version = self._analysis_manifest_implementation_version(manifest_row)
+        if implementation_version == _SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION:
             return None
 
         manifest = self._decode_model(
@@ -573,6 +922,156 @@ class SQLiteRunStore:
             manifest=manifest,
             result=result,
             comparisons=tuple(result.comparisons),
+            guardrails=expected_guardrails,
+            finalization=finalization,
+        )
+
+    def get_scientific_analysis(self) -> StoredScientificAnalysis | None:
+        """Load and cross-validate the finalized confirmatory analysis, if present."""
+
+        self._ensure_open()
+        manifest_row = self._connection.execute(
+            """
+            SELECT manifest_json, manifest_sha256
+            FROM analysis_manifest
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        if manifest_row is None:
+            counts = tuple(
+                self._connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in (
+                    "comparison_results",
+                    "guardrail_results",
+                    "analysis_decision",
+                    "analysis_finalization",
+                )
+            )
+            if any(counts):
+                raise StoreCorruptionError("analysis evidence exists without a manifest")
+            return None
+
+        implementation_version = self._analysis_manifest_implementation_version(manifest_row)
+        if implementation_version == _PHASE3_ANALYSIS_IMPLEMENTATION_VERSION:
+            return None
+
+        manifest = self._decode_model(
+            ScientificAnalysisManifest,
+            self._required_text(manifest_row, "manifest_json"),
+            self._required_text(manifest_row, "manifest_sha256"),
+            "scientific analysis manifest",
+        )
+        comparison_rows = self._connection.execute(
+            """
+            SELECT comparison_id, result_json, result_sha256
+            FROM comparison_results
+            ORDER BY comparison_id
+            """
+        ).fetchall()
+        comparison_members = tuple(
+            self._decode_scientific_comparison(row) for row in comparison_rows
+        )
+        efficacy_members = tuple(
+            member for member in comparison_members if isinstance(member, EfficacyComparisonResult)
+        )
+        attribution_members = tuple(
+            member
+            for member in comparison_members
+            if isinstance(member, PersistentStateAttributionResult)
+        )
+        if (
+            len(efficacy_members) != 3
+            or len(attribution_members) != 1
+            or len(comparison_members) != 4
+        ):
+            raise StoreCorruptionError(
+                "scientific analysis must persist three efficacy comparisons and attribution"
+            )
+
+        guardrail_rows = self._connection.execute(
+            """
+            SELECT guardrail_id, result_json, result_sha256
+            FROM guardrail_results
+            ORDER BY guardrail_id
+            """
+        ).fetchall()
+        guardrails = tuple(
+            self._decode_analysis_member(
+                ScientificGuardrailResult,
+                row,
+                id_column="guardrail_id",
+                label="scientific guardrail result",
+            )
+            for row in guardrail_rows
+        )
+        decision_row = self._connection.execute(
+            """
+            SELECT decision_json, decision_sha256
+            FROM analysis_decision
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        finalization_row = self._connection.execute(
+            """
+            SELECT finalization_json, finalization_sha256
+            FROM analysis_finalization
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        if decision_row is None or finalization_row is None:
+            raise StoreCorruptionError("scientific analysis manifest is not atomically finalized")
+        result = self._decode_model(
+            ConfirmatoryEvaluationResult,
+            self._required_text(decision_row, "decision_json"),
+            self._required_text(decision_row, "decision_sha256"),
+            "scientific analysis decision",
+        )
+        finalization = self._decode_model(
+            ScientificAnalysisFinalization,
+            self._required_text(finalization_row, "finalization_json"),
+            self._required_text(finalization_row, "finalization_sha256"),
+            "scientific analysis finalization",
+        )
+        self._validate_scientific_analysis_binding(manifest, result, stored=True)
+
+        expected_comparisons: tuple[BaseModel, ...] = (
+            *result.efficacy_comparisons,
+            result.attribution,
+        )
+        expected_comparison_hashes = tuple(
+            sorted(canonical_sha256(member) for member in expected_comparisons)
+        )
+        expected_guardrails = self._scientific_guardrails(result, stored=True)
+        expected_guardrail_hashes = tuple(
+            sorted(canonical_sha256(guardrail) for guardrail in expected_guardrails)
+        )
+        actual_comparison_hashes = tuple(
+            sorted(canonical_sha256(member) for member in comparison_members)
+        )
+        actual_guardrail_hashes = tuple(
+            sorted(canonical_sha256(guardrail) for guardrail in guardrails)
+        )
+        expected_finalization = ScientificAnalysisFinalization(
+            analysis_manifest_sha256=canonical_sha256(manifest),
+            evaluation_result_sha256=result.result_sha256,
+            decision_sha256=canonical_sha256(result),
+            comparison_result_sha256s=expected_comparison_hashes,
+            guardrail_result_sha256s=expected_guardrail_hashes,
+            guardrail_count=len(expected_guardrail_hashes),
+        )
+        if (
+            actual_comparison_hashes != expected_comparison_hashes
+            or actual_guardrail_hashes != expected_guardrail_hashes
+            or finalization != expected_finalization
+        ):
+            raise StoreCorruptionError(
+                "persisted scientific analysis members do not match the finalized decision"
+            )
+        return StoredScientificAnalysis(
+            manifest=manifest,
+            result=result,
+            efficacy_comparisons=result.efficacy_comparisons,
+            attribution=result.attribution,
             guardrails=expected_guardrails,
             finalization=finalization,
         )
@@ -1016,6 +1515,7 @@ class SQLiteRunStore:
         self.list_turn_inputs()
         self.get_finalization()
         self.get_analysis()
+        self.get_scientific_analysis()
 
     def compact(self) -> None:
         """Checkpoint and compact the single SQLite artifact in place."""
@@ -1122,6 +1622,89 @@ class SQLiteRunStore:
             raise StoreInvariantError("a run manifest must be bound before preparing turns")
         return manifest
 
+    def _analysis_manifest_implementation_version(self, row: sqlite3.Row) -> str:
+        payload = self._decode_json_object(
+            self._required_text(row, "manifest_json"),
+            self._required_text(row, "manifest_sha256"),
+            "analysis manifest",
+        )
+        implementation_version = payload.get("implementation_version")
+        if not isinstance(implementation_version, str):
+            raise StoreCorruptionError(
+                "analysis manifest has no string implementation_version discriminant"
+            )
+        if implementation_version == _LEGACY_SCIENTIFIC_ANALYSIS_IMPLEMENTATION_VERSION:
+            raise StoreCorruptionError(
+                "legacy confirmatory scientific analysis v1 is incompatible with the "
+                "contract-bound v2 evidence envelope; rerun the analysis"
+            )
+        if implementation_version not in _SUPPORTED_ANALYSIS_IMPLEMENTATION_VERSIONS:
+            raise StoreCorruptionError("analysis manifest has an unknown implementation_version")
+        return implementation_version
+
+    def _decode_scientific_comparison(
+        self,
+        row: sqlite3.Row,
+    ) -> EfficacyComparisonResult | PersistentStateAttributionResult:
+        comparison_id = self._required_text(row, "comparison_id")
+        result_sha256 = self._required_text(row, "result_sha256")
+        if comparison_id != result_sha256:
+            raise StoreCorruptionError(
+                "scientific comparison result identifier does not match its digest"
+            )
+        payload = self._decode_json_object(
+            self._required_text(row, "result_json"),
+            result_sha256,
+            "scientific comparison result",
+        )
+        comparison_kind = payload.get("comparison_kind")
+        if comparison_kind == "efficacy":
+            return self._decode_analysis_member(
+                EfficacyComparisonResult,
+                row,
+                id_column="comparison_id",
+                label="scientific comparison result",
+            )
+        if comparison_kind == "persistent_state_attribution":
+            return self._decode_analysis_member(
+                PersistentStateAttributionResult,
+                row,
+                id_column="comparison_id",
+                label="scientific comparison result",
+            )
+        raise StoreCorruptionError(
+            "scientific comparison has an unknown comparison_kind discriminant"
+        )
+
+    @staticmethod
+    def _scientific_guardrails(
+        result: ConfirmatoryEvaluationResult,
+        *,
+        stored: bool,
+    ) -> tuple[ScientificGuardrailResult, ...]:
+        candidates = (
+            tuple(result.guardrails)
+            + tuple(
+                guardrail
+                for comparison in result.efficacy_comparisons
+                for guardrail in comparison.guardrails
+            )
+            + tuple(result.attribution.causal_guardrails)
+        )
+        by_key: dict[tuple[str, str], ScientificGuardrailResult] = {}
+        for guardrail in candidates:
+            existing = by_key.get(guardrail.evidence_key)
+            if existing is not None and existing != guardrail:
+                if stored:
+                    raise StoreCorruptionError(
+                        "scientific guardrail key is bound to conflicting evidence"
+                    )
+                raise StoreInvariantError(
+                    "scientific guardrail key is bound to conflicting evidence"
+                )
+            by_key[guardrail.evidence_key] = guardrail
+        return tuple(by_key[key] for key in sorted(by_key))
+
     def _persist_analysis_member(
         self,
         *,
@@ -1227,6 +1810,323 @@ class SQLiteRunStore:
         if run_manifest.phase3_analysis_contract_sha256 != expected_contract_sha256:
             fail("analysis evidence does not match the pre-execution Phase 3 contract")
 
+    def _validate_scientific_analysis_binding(
+        self,
+        manifest: ScientificAnalysisManifest,
+        result: ConfirmatoryEvaluationResult,
+        *,
+        stored: bool,
+        context: object | None = None,
+    ) -> None:
+        run_manifest = self._require_manifest()
+        run_finalization = self.get_finalization()
+
+        def fail(message: str) -> None:
+            if stored:
+                raise StoreCorruptionError(message)
+            raise StoreInvariantError(message)
+
+        if run_finalization is None:
+            fail("scientific analysis requires a finalized confirmatory run")
+            return
+        if run_finalization.execution_accounting is None:
+            fail("scientific analysis requires durable execution accounting")
+        if (
+            run_manifest.database_schema_version != CURRENT_SCHEMA_VERSION
+            or run_manifest.decision_rule_version != "confirmatory-scientific-decision-v2"
+            or run_manifest.run_tier != "confirmatory"
+            or not run_manifest.working_tree_clean
+            or run_manifest.confirmatory_analysis_contract_sha256 is None
+            or run_manifest.static_selection_evidence_sha256 is None
+        ):
+            fail("scientific analysis requires a schema-v2 confirmatory run manifest")
+        if (
+            run_manifest.provider_identity.provider_type != "llama_cpp"
+            or run_manifest.provider_identity.model_sha256 is None
+        ):
+            fail("scientific analysis requires a digest-bound llama_cpp provider")
+        try:
+            require_llama_cpp_provider_binding(
+                run_manifest.provider_identity,
+                run_manifest.provider_effective_configuration_json,
+            )
+        except (TypeError, ValueError) as exc:
+            fail(
+                "scientific analysis requires internally consistent digest-bound "
+                f"llama_cpp provider evidence: {exc}"
+            )
+            return
+        stored_turns = self.list_turns()
+        stored_inputs = self.list_turn_inputs()
+        turn_by_id = {turn.condition_id: turn for turn in stored_turns}
+        input_by_id = {evidence.condition_id: evidence for evidence in stored_inputs}
+        if input_by_id.keys() != turn_by_id.keys():
+            fail("scientific analysis requires exact prompt-side input evidence coverage")
+        if (
+            run_manifest.turn_input_evidence_sha256 is None
+            or canonical_sha256(tuple(sorted(stored_inputs, key=lambda item: item.condition_id)))
+            != run_manifest.turn_input_evidence_sha256
+        ):
+            fail("scientific prompt-side inputs do not match the frozen run identity")
+        prompt_family_by_sequence: dict[str, str] = {}
+        for condition_id, turn in turn_by_id.items():
+            evidence = input_by_id[condition_id]
+            prompt_family = evidence.prompt_family
+            sequence_id = turn.condition.prompt_sequence_id
+            previous_family = prompt_family_by_sequence.setdefault(sequence_id, prompt_family)
+            if previous_family != prompt_family:
+                fail("scientific prompt family is inconsistent within a prompt sequence")
+            response = turn.response
+            metrics = turn.metrics
+            if response is None or metrics is None:
+                fail("scientific input reconstruction requires committed response metrics")
+                return
+            reconstructed_metrics = compute_response_metrics(
+                MetricContext(
+                    prompt_case_id=evidence.prompt_case_id,
+                    prompt_family=evidence.prompt_family,
+                    prompt=turn.request.prompt,
+                    response_text=response.text,
+                    validator=evidence.validator,
+                )
+            )
+            if metrics != reconstructed_metrics:
+                fail("scientific response metrics do not reconstruct from committed inputs")
+        if dict(sorted(prompt_family_by_sequence.items())) != dict(
+            manifest.prompt_family_by_sequence
+        ):
+            fail("scientific prompt-family mapping does not reconstruct from committed inputs")
+        if result.coverage.expected_count != len(
+            stored_turns
+        ) or result.coverage.observed_count != len(stored_turns):
+            fail("confirmatory coverage does not reconstruct from committed turn evidence")
+        try:
+            if (
+                run_manifest.evaluation_spec_json is None
+                or run_manifest.evaluation_spec_sha256 is None
+            ):
+                raise ValueError("run manifest lacks its frozen evaluation spec")
+            evaluation_spec = EvaluationSpec.model_validate_json(run_manifest.evaluation_spec_json)
+            stored_records = _stored_scientific_records(
+                stored_turns,
+                dataset_sha256=run_manifest.dataset_hash,
+                action_bounds=run_manifest.action_bounds,
+            )
+            source_coverage, source_guardrails = _source_scientific_guardrails(
+                stored_records,
+                run_manifest=run_manifest,
+                dataset_seal_sha256=manifest.dataset_seal_sha256,
+                evaluation_spec=evaluation_spec,
+            )
+            expected_unit_metrics = _stored_scientific_unit_metrics(stored_records)
+        except (TypeError, ValueError) as exc:
+            fail(f"scientific unit evidence cannot be reconstructed: {exc}")
+            return
+        if result.coverage != source_coverage:
+            fail("confirmatory coverage does not match committed source evidence")
+        expected_guardrails_by_key = {
+            guardrail.evidence_key: guardrail for guardrail in source_guardrails
+        }
+        actual_guardrails_by_key = {
+            guardrail.evidence_key: guardrail for guardrail in result.guardrails
+        }
+        if actual_guardrails_by_key != expected_guardrails_by_key:
+            fail("scientific guardrails do not reconstruct from committed source evidence")
+        actual_unit_metrics = {
+            (
+                outcome.unit_key.prompt_sequence_id,
+                outcome.unit_key.model_seed,
+                outcome.policy_id,
+            ): (
+                outcome.guardrail_clean_task_score.raw_task_score,
+                outcome.instruction_adherence,
+                outcome.repetition_ratio,
+                outcome.response_length_tokens,
+            )
+            for outcome in result.unit_outcomes
+        }
+        if actual_unit_metrics != expected_unit_metrics:
+            fail("scientific unit outcomes do not reconstruct from committed turn evidence")
+        from neurallm.experiments.scientific_analysis import (
+            _optional_metric_availability_from_turns,
+            _recovery_evidence,
+        )
+
+        expected_optional_availability = _optional_metric_availability_from_turns(
+            stored_turns,
+            result.confirmatory_analysis_spec,
+        )
+        if dict(result.optional_metric_availability) != expected_optional_availability:
+            fail("optional metric availability does not reconstruct from committed turns")
+
+        try:
+            _, expected_recovery_units, _, _ = _recovery_evidence(
+                stored_records,
+                result.confirmatory_analysis_spec,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            fail(f"recovery unit evidence cannot be reconstructed: {exc}")
+            return
+        if result.recovery_unit_outcomes != expected_recovery_units:
+            fail("recovery unit outcomes do not reconstruct from committed turn evidence")
+        attribution_records = tuple(
+            record
+            for record in stored_records
+            if record.turn_index > 0
+            and record.policy_id in {"neural_persistent", "neural_matched_history_state_reset"}
+        )
+        attribution_outcomes = aggregate_matched_units(attribution_records)
+        focal_attribution_keys = {
+            (outcome.unit_key.prompt_sequence_id, outcome.unit_key.model_seed)
+            for outcome in attribution_outcomes
+            if outcome.policy_id == "neural_persistent"
+        }
+        reset_attribution_keys = {
+            (outcome.unit_key.prompt_sequence_id, outcome.unit_key.model_seed)
+            for outcome in attribution_outcomes
+            if outcome.policy_id == "neural_matched_history_state_reset"
+        }
+        if focal_attribution_keys != reset_attribution_keys:
+            fail("attribution unit evidence lacks exact persistent/reset matched-unit keys")
+        attribution_by_key = {
+            (
+                outcome.policy_id,
+                outcome.unit_key.prompt_sequence_id,
+                outcome.unit_key.model_seed,
+            ): outcome
+            for outcome in attribution_outcomes
+        }
+        try:
+            expected_attribution_units = tuple(
+                (
+                    outcome.unit_key.prompt_sequence_id,
+                    outcome.unit_key.model_seed,
+                    outcome.task_score
+                    - attribution_by_key[
+                        (
+                            "neural_matched_history_state_reset",
+                            outcome.unit_key.prompt_sequence_id,
+                            outcome.unit_key.model_seed,
+                        )
+                    ].task_score,
+                )
+                for outcome in attribution_outcomes
+                if outcome.policy_id == "neural_persistent"
+            )
+        except KeyError as exc:
+            fail(f"attribution unit evidence lacks an exact reset match: {exc}")
+            return
+        actual_attribution_units = tuple(
+            (
+                outcome.unit_key.prompt_sequence_id,
+                outcome.unit_key.model_seed,
+                outcome.persistent_minus_reset_task_score,
+            )
+            for outcome in result.attribution_unit_outcomes
+        )
+        if actual_attribution_units != expected_attribution_units:
+            fail("attribution unit outcomes do not reconstruct from committed turn evidence")
+        if manifest.run_manifest_sha256 != canonical_sha256(run_manifest):
+            fail("scientific analysis manifest does not match the run manifest")
+        if manifest.run_finalization_sha256 != canonical_sha256(run_finalization):
+            fail("scientific analysis manifest does not match the run finalization")
+        if manifest.scientific_result_sha256 != run_finalization.scientific_result_sha256:
+            fail("scientific analysis does not match the finalized scientific result")
+        try:
+            recomputed_scientific_result_sha256 = scientific_result_sha256(self.list_turns())
+        except ValueError as exc:
+            fail(f"scientific analysis cannot reconstruct the committed result: {exc}")
+            return
+        if recomputed_scientific_result_sha256 != run_finalization.scientific_result_sha256:
+            fail("scientific analysis finalization does not match the committed result")
+        if (
+            run_manifest.scientific_identity_sha256 is None
+            or manifest.scientific_identity_sha256 != run_manifest.scientific_identity_sha256
+        ):
+            fail("scientific analysis does not match the frozen plan scientific identity")
+        if (
+            run_manifest.preregistration_sha256 is None
+            or manifest.preregistration_sha256 != run_manifest.preregistration_sha256
+        ):
+            fail("scientific analysis does not match the preregistration identity")
+        if (
+            run_manifest.static_selection_evidence_sha256 is None
+            or manifest.static_selection_evidence_sha256
+            != run_manifest.static_selection_evidence_sha256
+        ):
+            fail("scientific analysis does not match the static-selection evidence")
+        if manifest.dataset_sha256 != run_manifest.dataset_hash:
+            fail("scientific analysis does not match the run dataset")
+        if manifest.evaluation_input_sha256 != result.input_sha256:
+            fail("scientific analysis does not match the confirmatory evaluator input")
+        if (
+            result.confirmatory_analysis_spec != manifest.confirmatory_analysis_spec
+            or result.confirmatory_analysis_spec_sha256
+            != manifest.confirmatory_analysis_spec_sha256
+            or result.prompt_family_by_sequence != manifest.prompt_family_by_sequence
+            or result.prompt_family_design_sha256 != manifest.prompt_family_design_sha256
+        ):
+            fail("scientific result does not match the preregistered analysis design")
+        if (
+            not result.claim_eligible
+            or not result.causal_mechanism_validated
+            or not manifest.claim_eligible
+            or not manifest.causal_mechanism_validated
+            or result.run_manifest_sha256 != manifest.run_manifest_sha256
+            or result.run_finalization_sha256 != manifest.run_finalization_sha256
+            or result.analysis_contract_sha256 != manifest.confirmatory_analysis_contract_sha256
+        ):
+            fail("scientific result is not bound to claim-eligible closed-run evidence")
+        if context is not None:
+            from neurallm.experiments.scientific_analysis import ConfirmatoryAnalysisContext
+
+            if not isinstance(context, ConfirmatoryAnalysisContext):
+                fail("scientific analysis context has the wrong type")
+            elif (
+                not context.claim_eligible
+                or not context.causal_mechanism_validated
+                or context.analysis_contract_sha256
+                != manifest.confirmatory_analysis_contract_sha256
+                or context.evaluation_input_sha256 != result.input_sha256
+                or context.run_manifest_sha256 != manifest.run_manifest_sha256
+                or context.run_finalization_sha256 != manifest.run_finalization_sha256
+            ):
+                fail("scientific analysis context is not the exact claim-eligible run binding")
+        from neurallm.experiments.scientific_analysis import (
+            confirmatory_analysis_contract_sha256,
+        )
+
+        assert run_manifest.evaluation_spec_sha256 is not None
+        assert run_manifest.turn_input_evidence_sha256 is not None
+        assert run_manifest.static_selection_evidence_sha256 is not None
+        try:
+            expected_contract_sha256 = confirmatory_analysis_contract_sha256(
+                scientific_identity_sha256=manifest.scientific_identity_sha256,
+                preregistration_sha256=manifest.preregistration_sha256,
+                static_selection_evidence_sha256=(manifest.static_selection_evidence_sha256),
+                confirmatory_analysis_spec=manifest.confirmatory_analysis_spec,
+                confirmatory_analysis_spec_sha256=(manifest.confirmatory_analysis_spec_sha256),
+                evaluation_spec=evaluation_spec,
+                evaluation_spec_sha256=run_manifest.evaluation_spec_sha256,
+                turn_input_evidence_sha256=run_manifest.turn_input_evidence_sha256,
+                prompt_family_by_sequence=manifest.prompt_family_by_sequence,
+                prompt_family_design_sha256=manifest.prompt_family_design_sha256,
+                dataset_sha256=manifest.dataset_sha256,
+                dataset_purpose=manifest.dataset_purpose,
+                dataset_seal_sha256=manifest.dataset_seal_sha256,
+            )
+        except ValueError as exc:
+            fail(f"scientific analysis contract evidence is internally inconsistent: {exc}")
+            return
+        if (
+            manifest.confirmatory_analysis_contract_sha256 != expected_contract_sha256
+            or run_manifest.confirmatory_analysis_contract_sha256 != expected_contract_sha256
+        ):
+            fail(
+                "scientific analysis evidence does not match the pre-execution "
+                "confirmatory analysis contract"
+            )
+
     def _bind_turn_input(self, evidence: TurnInputEvidence) -> None:
         """Insert one immutable input record inside the caller's transaction."""
 
@@ -1283,6 +2183,15 @@ class SQLiteRunStore:
             fail("run finalization condition IDs do not exactly match stored turns")
         if any(self._required_text(row, "state") != TurnState.COMMITTED.value for row in rows):
             fail("run finalization requires every expected turn to be committed")
+        if finalization.execution_accounting is not None:
+            response_count = int(
+                self._connection.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
+            )
+            accounting = finalization.execution_accounting
+            if response_count != accounting.successful_responses:
+                fail("run finalization accounting disagrees with persisted responses")
+            if accounting.dispatched_logical_generations != len(rows):
+                fail("run finalization accounting disagrees with dispatched turns")
 
     def _validate_history_binding(
         self,
@@ -1507,6 +2416,16 @@ class SQLiteRunStore:
             raise StoreInvariantError("response effective parameters do not match the request")
         if response.raw_metadata.request_sha256 != canonical_sha256(request):
             raise StoreInvariantError("response metadata does not bind the canonical request")
+        if (
+            response.provider_identity.provider_type == "llama_cpp"
+            or response.raw_metadata.generation_method == "llama_cpp_completion_http_v1"
+        ):
+            try:
+                require_llama_cpp_generation_binding(request, response)
+            except (TypeError, ValueError) as exc:
+                raise StoreInvariantError(
+                    "llama_cpp wire evidence does not bind the stored request and response"
+                ) from exc
 
     def _validate_stored_history_binding(
         self,

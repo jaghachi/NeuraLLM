@@ -25,7 +25,14 @@ from neurallm.providers.llama_cpp import (
     LlamaCppProviderError,
     LlamaCppTransportError,
     llama_cpp_provider_identity,
+    require_llama_cpp_provider_binding,
 )
+from neurallm.providers.llama_cpp_evidence import (
+    LlamaCppGenerationBindingError,
+    reconstruct_llama_cpp_generation_binding,
+    require_llama_cpp_generation_binding,
+)
+from neurallm.providers.preflight import LlamaCppPreflightResult, preflight_llama_cpp
 
 __all__ = [
     "DECODING_FLOAT_ABSOLUTE_TOLERANCE",
@@ -40,12 +47,18 @@ __all__ = [
     "LlamaCppEffectiveConfiguration",
     "LLAMA_CPP_IMPLEMENTATION_VERSION",
     "LlamaCppIdentityDriftError",
+    "LlamaCppGenerationBindingError",
     "LlamaCppProtocolError",
     "LlamaCppProvider",
     "LlamaCppProviderConfig",
     "LlamaCppProviderError",
+    "LlamaCppPreflightResult",
     "LlamaCppTransportError",
     "llama_cpp_provider_identity",
+    "require_llama_cpp_provider_binding",
+    "reconstruct_llama_cpp_generation_binding",
+    "require_llama_cpp_generation_binding",
+    "preflight_llama_cpp",
     "ProviderIdentityMismatchError",
     "effective_parameters_match_request",
 ]

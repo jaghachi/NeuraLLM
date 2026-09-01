@@ -19,6 +19,7 @@ from neurallm.experiments.dataset import (
     validate_dataset_identity,
 )
 from neurallm.experiments.plan import ExperimentPlan, build_plan
+from neurallm.experiments.protocol import RunTier
 from neurallm.experiments.runner import (
     ExecutionSummary,
     GitProvenance,
@@ -28,6 +29,10 @@ from neurallm.experiments.runner import (
     build_run_manifest,
     execute_plan,
     read_git_provenance,
+)
+from neurallm.experiments.scientific_analysis import analyze_closed_confirmatory_run
+from neurallm.experiments.static_selection import (
+    validate_static_selection_evidence_against_dataset,
 )
 from neurallm.experiments.yaml_loader import load_yaml_mapping
 from neurallm.providers.fake import (
@@ -47,8 +52,13 @@ from neurallm.reporting import (
     ArtifactExportSummary,
     export_closed_run,
 )
+from neurallm.storage import ScientificAnalysisManifest, SQLiteRunStore, StoreInvariantError
 
 ExecutableProvider = FakeProvider | LlamaCppProvider
+
+
+class LiveProviderAuthorizationError(RuntimeError):
+    """Raised before live provider construction when execution lacks authorization."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +137,14 @@ def prepare_experiment(
         loaded_config.config.dataset,
     )
     development_selection_dataset = _load_development_selection_dataset(loaded_config)
+    selection_evidence = loaded_config.config.static_selection_evidence
+    if selection_evidence is not None:
+        if development_selection_dataset is None:
+            raise ValueError("static selection evidence requires its development dataset")
+        validate_static_selection_evidence_against_dataset(
+            selection_evidence,
+            development_selection_dataset.dataset,
+        )
     plan = build_plan(loaded_config, loaded_dataset)
     policy_specs = loaded_config.config.policy_specs
     policy_runtimes = dict(
@@ -205,9 +223,27 @@ def construct_provider(loaded_config: LoadedExperimentConfig) -> ExecutableProvi
     return provider
 
 
-def execute_prepared(prepared: PreparedExperiment) -> WorkflowExecutionSummary:
+def execute_prepared(
+    prepared: PreparedExperiment,
+    *,
+    allow_live_provider: bool = False,
+) -> WorkflowExecutionSummary:
     """Execute one prepared experiment and publish only its compact artifact set."""
 
+    protocol = prepared.plan.protocol
+    if protocol is not None and protocol.run_tier is RunTier.CONFIRMATORY:
+        if prepared.loaded_config.config.provider.kind != "llama_cpp":
+            raise ValueError("confirmatory execution requires the live llama_cpp provider")
+        if not prepared.provenance.working_tree_clean:
+            raise ValueError("confirmatory execution requires a clean source worktree")
+    if (
+        prepared.loaded_config.config.provider.kind == "llama_cpp"
+        and allow_live_provider is not True
+    ):
+        raise LiveProviderAuthorizationError(
+            "llama_cpp workflow execution requires allow_live_provider=True; "
+            "no output directory or provider was constructed"
+        )
     output_directory = prepared.loaded_config.artifact_root
     output_directory.mkdir(parents=True, exist_ok=True)
     allowed_before_recovery = CLOSED_RUN_ARTIFACTS | SQLITE_RECOVERY_SIDECARS
@@ -235,14 +271,74 @@ def execute_prepared(prepared: PreparedExperiment) -> WorkflowExecutionSummary:
     finally:
         if isinstance(provider, LlamaCppProvider):
             provider.close()
-    if prepared.plan.evaluation is not None:
+    database_path = output_directory / "run.sqlite3"
+    if protocol is not None and protocol.run_tier is RunTier.CONFIRMATORY:
+        if not isinstance(provider, LlamaCppProvider):
+            raise StoreInvariantError(
+                "confirmatory claim finalization requires the digest-bound llama_cpp provider"
+            )
+        provider.verify_model_artifact()
+        result, context = analyze_closed_confirmatory_run(prepared.plan, database_path)
+        spec = prepared.plan.confirmatory_analysis
+        preregistration = prepared.plan.preregistration
+        dataset_seal = prepared.plan.dataset_seal
+        dataset_purpose = prepared.plan.dataset_purpose
+        if (
+            not context.claim_eligible
+            or not context.causal_mechanism_validated
+            or context.run_manifest_sha256 is None
+            or context.run_finalization_sha256 is None
+            or spec is None
+            or preregistration is None
+            or prepared.plan.static_selection_evidence_sha256 is None
+            or dataset_seal is None
+            or dataset_purpose is None
+        ):
+            raise StoreInvariantError(
+                "confirmatory execution did not produce claim-eligible frozen evidence"
+            )
+        with SQLiteRunStore(database_path) as store:
+            run_manifest = store.get_manifest()
+            run_finalization = store.get_finalization()
+            if run_manifest is None or run_finalization is None:
+                raise StoreInvariantError(
+                    "confirmatory analysis requires a manifest-bound finalized run"
+                )
+            analysis_manifest = ScientificAnalysisManifest(
+                claim_eligible=True,
+                causal_mechanism_validated=True,
+                run_manifest_sha256=context.run_manifest_sha256,
+                run_finalization_sha256=context.run_finalization_sha256,
+                scientific_result_sha256=run_finalization.scientific_result_sha256,
+                scientific_identity_sha256=prepared.plan.scientific_identity_sha256,
+                preregistration_sha256=preregistration.seal_sha256,
+                static_selection_evidence_sha256=(prepared.plan.static_selection_evidence_sha256),
+                confirmatory_analysis_contract_sha256=(context.analysis_contract_sha256),
+                confirmatory_analysis_spec=spec,
+                confirmatory_analysis_spec_sha256=canonical_sha256(spec),
+                prompt_family_by_sequence=result.prompt_family_by_sequence,
+                prompt_family_design_sha256=result.prompt_family_design_sha256,
+                dataset_sha256=prepared.plan.dataset_hash,
+                dataset_purpose=dataset_purpose,
+                dataset_seal_sha256=dataset_seal.seal_sha256,
+                evaluation_input_sha256=context.evaluation_input_sha256,
+            )
+            store.persist_scientific_analysis(analysis_manifest, result, context=context)
+            stored = store.get_scientific_analysis()
+            if stored is None or stored.result != result:
+                raise StoreInvariantError(
+                    "confirmatory scientific analysis was not durably persisted"
+                )
+            store.verify_integrity()
+            store.compact()
+    elif prepared.plan.evaluation is not None:
         selection = prepared.loaded_config.config.static_selection_record
         if selection is None:
             raise ValueError("Phase 3 execution lacks frozen static-selection evidence")
         analyze_closed_run(
             prepared.plan,
             selection,
-            output_directory / "run.sqlite3",
+            database_path,
         )
     artifacts = export_closed_run(output_directory)
     return WorkflowExecutionSummary(execution=execution, artifacts=artifacts)
@@ -250,6 +346,7 @@ def execute_prepared(prepared: PreparedExperiment) -> WorkflowExecutionSummary:
 
 __all__ = [
     "ExecutableProvider",
+    "LiveProviderAuthorizationError",
     "PreparedExperiment",
     "WorkflowExecutionSummary",
     "construct_provider",

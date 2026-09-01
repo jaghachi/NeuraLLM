@@ -60,6 +60,19 @@ UnitInterval = Annotated[
 _PHASE4_MATCHED_HISTORY_POLICY_SOURCES = {
     "neural_matched_history_state_reset": "neural_persistent",
 }
+_MODEL_BACKED_POLICY_IDS = {
+    "best_static",
+    "heuristic_adaptive",
+    "neural_matched_history_state_reset",
+    "neural_persistent",
+    "random_matched",
+}
+_MODEL_BACKED_RULE_TIERS = {
+    "engineering-smoke-no-scientific-decision-v1": "engineering_smoke",
+    "development-pilot-no-scientific-decision-v1": "development_pilot",
+    "confirmatory-scientific-decision-v1": "confirmatory",
+    "confirmatory-scientific-decision-v2": "confirmatory",
+}
 
 
 class StrictFrozenModel(BaseModel):
@@ -233,6 +246,11 @@ class SeedSchedule(StrictFrozenModel):
     model_seeds: tuple[SqliteInt64, ...]
     controller_seeds: tuple[SqliteInt64, ...]
 
+    @field_validator("model_seeds", "controller_seeds", mode="before")
+    @classmethod
+    def _accept_serialized_seed_sequences(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
     @model_validator(mode="after")
     def _validate_seed_streams(self) -> Self:
         for name, values in (
@@ -253,6 +271,17 @@ class ActionBounds(StrictFrozenModel):
     top_p_delta: tuple[FiniteFloat, FiniteFloat] = (-0.05, 0.05)
     top_k_delta: tuple[int, int] = (-10, 10)
     presence_penalty_delta: tuple[FiniteFloat, FiniteFloat] = (-0.20, 0.20)
+
+    @field_validator(
+        "temperature_delta",
+        "top_p_delta",
+        "top_k_delta",
+        "presence_penalty_delta",
+        mode="before",
+    )
+    @classmethod
+    def _accept_serialized_intervals(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def _validate_intervals(self) -> Self:
@@ -297,6 +326,17 @@ class DecodingBounds(StrictFrozenModel):
     top_k: tuple[NonNegativeInt, NonNegativeInt] = (0, 200)
     presence_penalty: tuple[FiniteFloat, FiniteFloat] = (-2.0, 2.0)
 
+    @field_validator(
+        "temperature",
+        "top_p",
+        "top_k",
+        "presence_penalty",
+        mode="before",
+    )
+    @classmethod
+    def _accept_serialized_intervals(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
     @model_validator(mode="after")
     def _validate_intervals(self) -> Self:
         for field_name in ("temperature", "top_p", "top_k", "presence_penalty"):
@@ -327,7 +367,43 @@ class RunManifest(StrictFrozenModel):
     decoding_bounds: DecodingBounds = DecodingBounds()
     decision_rule_version: NonEmptyString
     database_schema_version: PositiveInt
+    evaluation_spec_json: NonEmptyString | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    evaluation_spec_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    turn_input_evidence_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     phase3_analysis_contract_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    run_tier: NonEmptyString | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    scientific_identity_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    preregistration_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    static_selection_evidence_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    candidate_grid_sha256: Sha256Hex | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    confirmatory_analysis_contract_sha256: Sha256Hex | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -367,18 +443,62 @@ class RunManifest(StrictFrozenModel):
     @model_validator(mode="after")
     def _validate_provider_config_hash(self) -> Self:
         configured_policies = set(self.policy_config_hashes)
-        if self.matched_history_policy_sources and (
-            dict(self.matched_history_policy_sources) != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES
-        ):
-            raise ValueError("manifest permits only the Phase 4 matched-history policy edge")
+        matched_sources = dict(self.matched_history_policy_sources)
+        if matched_sources and matched_sources != _PHASE4_MATCHED_HISTORY_POLICY_SOURCES:
+            raise ValueError("manifest permits only the frozen matched-history policy edge")
         phase4 = self.decision_rule_version == "phase4-neural-mechanism-only-v1"
-        if phase4 != bool(self.matched_history_policy_sources):
-            raise ValueError("Phase 4 decision rule and matched-history edge must appear together")
+        model_backed_tier = _MODEL_BACKED_RULE_TIERS.get(self.decision_rule_version)
+        has_attribution_edge = bool(self.matched_history_policy_sources)
+        if phase4 and not has_attribution_edge:
+            raise ValueError("Phase 4 decision rule requires its matched-history edge")
+        if not phase4 and model_backed_tier is None and has_attribution_edge:
+            raise ValueError("matched-history edge requires a causal attribution protocol")
         if phase4 and configured_policies != {
             "neural_persistent",
             "neural_matched_history_state_reset",
         }:
             raise ValueError("Phase 4 manifest requires exactly the two neural policies")
+        if model_backed_tier is not None:
+            if not has_attribution_edge or configured_policies != _MODEL_BACKED_POLICY_IDS:
+                raise ValueError(
+                    "model-backed manifest requires the exact five policies and attribution edge"
+                )
+            if self.run_tier != model_backed_tier:
+                raise ValueError("model-backed run tier does not match its decision rule")
+            if self.scientific_identity_sha256 is None:
+                raise ValueError("model-backed manifest requires the frozen scientific identity")
+            development_pilot = model_backed_tier == "development_pilot"
+            if development_pilot != (self.candidate_grid_sha256 is not None):
+                raise ValueError(
+                    "development-pilot manifest and candidate-grid identity must appear together"
+                )
+            confirmatory = model_backed_tier == "confirmatory"
+            if confirmatory != (self.preregistration_sha256 is not None):
+                raise ValueError(
+                    "confirmatory manifest and preregistration identity must appear together"
+                )
+            if confirmatory != (self.static_selection_evidence_sha256 is not None):
+                raise ValueError(
+                    "confirmatory manifest and static-selection evidence must appear together"
+                )
+            if confirmatory != (self.confirmatory_analysis_contract_sha256 is not None):
+                raise ValueError(
+                    "confirmatory manifest and final analysis contract must appear together"
+                )
+            if confirmatory != (self.turn_input_evidence_sha256 is not None):
+                raise ValueError(
+                    "confirmatory manifest and frozen turn-input identity must appear together"
+                )
+        elif (
+            self.run_tier is not None
+            or self.scientific_identity_sha256 is not None
+            or self.preregistration_sha256 is not None
+            or self.static_selection_evidence_sha256 is not None
+            or self.candidate_grid_sha256 is not None
+            or self.confirmatory_analysis_contract_sha256 is not None
+            or self.turn_input_evidence_sha256 is not None
+        ):
+            raise ValueError("only model-backed manifests may carry protocol identities")
         for policy_id, source_policy_id in self.matched_history_policy_sources.items():
             if policy_id == source_policy_id:
                 raise ValueError("matched history source must name another policy")
@@ -404,6 +524,22 @@ class RunManifest(StrictFrozenModel):
             raise ValueError(
                 "provider effective configuration must be finite canonical JSON"
             ) from exc
+        if (self.evaluation_spec_json is None) != (self.evaluation_spec_sha256 is None):
+            raise ValueError("evaluation spec JSON and SHA-256 must appear together")
+        if self.evaluation_spec_json is not None:
+            assert self.evaluation_spec_sha256 is not None
+            try:
+                evaluation_spec: object = json.loads(self.evaluation_spec_json)
+                if not isinstance(evaluation_spec, dict) or not all(
+                    isinstance(key, str) for key in evaluation_spec
+                ):
+                    raise ValueError("evaluation spec must be a JSON object")
+                if canonical_json(evaluation_spec) != self.evaluation_spec_json:
+                    raise ValueError("evaluation spec must be canonical JSON")
+                if canonical_sha256(evaluation_spec) != self.evaluation_spec_sha256:
+                    raise ValueError("evaluation spec hash does not match manifest")
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError("evaluation spec must be finite canonical JSON") from exc
         phase3 = self.decision_rule_version == "phase3-baseline-evaluator-v1"
         if phase3 and self.phase3_analysis_contract_sha256 is None:
             raise ValueError("Phase 3 run manifest requires its pre-execution analysis contract")

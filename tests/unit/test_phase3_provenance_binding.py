@@ -180,17 +180,17 @@ def test_run_manifest_requires_the_exact_phase4_rule_and_matched_history_edge() 
 
     rule_without_edge = dict(base)
     rule_without_edge["matched_history_policy_sources"] = {}
-    with pytest.raises(ValueError, match="must appear together"):
+    with pytest.raises(ValueError, match="requires its matched-history edge"):
         RunManifest.model_validate(rule_without_edge)
 
     edge_without_rule = dict(base)
     edge_without_rule["decision_rule_version"] = "test-v1"
-    with pytest.raises(ValueError, match="must appear together"):
+    with pytest.raises(ValueError, match="requires a causal attribution protocol"):
         RunManifest.model_validate(edge_without_rule)
 
     wrong_edge = dict(base)
     wrong_edge["matched_history_policy_sources"] = {persistent: reset}
-    with pytest.raises(ValueError, match="only the Phase 4 matched-history policy edge"):
+    with pytest.raises(ValueError, match="permits only the frozen matched-history policy edge"):
         RunManifest.model_validate(wrong_edge)
 
 

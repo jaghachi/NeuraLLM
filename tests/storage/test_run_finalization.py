@@ -8,7 +8,13 @@ from pydantic import ValidationError
 from neurallm.domain.serialization import canonical_sha256
 from neurallm.providers.fake import FakeProvider
 from neurallm.reporting import scientific_result_sha256
-from neurallm.storage import RunFinalization, SQLiteRunStore, StoreInvariantError, TurnState
+from neurallm.storage import (
+    DurableExecutionAccounting,
+    RunFinalization,
+    SQLiteRunStore,
+    StoreInvariantError,
+    TurnState,
+)
 from tests.storage.helpers import complete_request, make_manifest, make_request
 
 
@@ -31,6 +37,26 @@ def test_finalization_model_rejects_invalid_schedule_identity(
             expected_condition_count=condition_count,
             manifest_sha256="c" * 64,
             scientific_result_sha256="d" * 64,
+        )
+
+
+def test_durable_execution_accounting_rejects_incoherent_counts() -> None:
+    with pytest.raises(ValidationError, match="successful plus uncertain"):
+        DurableExecutionAccounting(
+            planned_logical_generations=20,
+            dispatched_logical_generations=20,
+            successful_responses=19,
+            uncertain_dispatches=0,
+            committed_logical_generations=19,
+        )
+
+    with pytest.raises(ValidationError, match="cannot exceed successful"):
+        DurableExecutionAccounting(
+            planned_logical_generations=20,
+            dispatched_logical_generations=20,
+            successful_responses=19,
+            uncertain_dispatches=1,
+            committed_logical_generations=20,
         )
 
 

@@ -115,6 +115,14 @@ class GenerationResponse(_StrictFrozenModel):
     effective_parameters: DecodingParameters
     raw_metadata: GenerationMetadata
 
+    @model_validator(mode="after")
+    def _validate_provider_protocol_pair(self) -> Self:
+        llama_identity = self.provider_identity.provider_type == "llama_cpp"
+        llama_protocol = self.raw_metadata.generation_method == "llama_cpp_completion_http_v1"
+        if llama_identity != llama_protocol:
+            raise ValueError("llama_cpp provider identity and generation protocol must agree")
+        return self
+
 
 def effective_parameters_match_request(
     effective: DecodingParameters,

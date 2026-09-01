@@ -16,14 +16,19 @@ from neurallm.storage.models import (
     AnalysisFinalization,
     AnalysisManifest,
     CommittedHistory,
+    DurableExecutionAccounting,
     HistoryBinding,
     ResumeAction,
     RunFinalization,
+    ScientificAnalysisFinalization,
+    ScientificAnalysisManifest,
     StoredAnalysis,
+    StoredScientificAnalysis,
     StoredTurn,
     TurnInputEvidence,
     TurnState,
 )
+from neurallm.storage.provenance import scientific_result_sha256
 from neurallm.storage.sqlite import SQLiteRunStore
 
 __all__ = [
@@ -31,12 +36,15 @@ __all__ = [
     "AnalysisManifest",
     "CURRENT_SCHEMA_VERSION",
     "CommittedHistory",
+    "DurableExecutionAccounting",
     "DuplicateLogicalRequestError",
     "HistoryBinding",
     "HistoryMismatchError",
     "ManifestMismatchError",
     "ResumeAction",
     "RunFinalization",
+    "ScientificAnalysisFinalization",
+    "ScientificAnalysisManifest",
     "SQLiteRunStore",
     "SchemaVersionError",
     "StateTransitionError",
@@ -45,7 +53,9 @@ __all__ = [
     "StoreInvariantError",
     "StoredTurn",
     "StoredAnalysis",
+    "StoredScientificAnalysis",
     "TurnInputEvidence",
     "TurnState",
     "UncertainDispatchError",
+    "scientific_result_sha256",
 ]

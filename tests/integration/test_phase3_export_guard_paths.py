@@ -21,7 +21,9 @@ def _closed_run(
 ) -> tuple[Path, RunFinalization, StoredTurn]:
     path.mkdir()
     provider = FakeProvider()
-    manifest = make_manifest(provider.provider_identity)
+    manifest = make_manifest(provider.provider_identity).model_copy(
+        update={"decision_rule_version": "phase2-no-scientific-decision-v1"}
+    )
     if phase3:
         manifest = manifest.model_copy(
             update={
@@ -53,7 +55,7 @@ def test_pre_phase3_export_rejects_unexpected_analysis(
     run_directory, _, _ = _closed_run(tmp_path / "phase2")
     monkeypatch.setattr(SQLiteRunStore, "get_analysis", lambda _store: object())
 
-    with pytest.raises(ValueError, match="pre-Phase 3"):
+    with pytest.raises(ValueError, match="Phase 2 run unexpectedly"):
         export_closed_run(run_directory)
 
 

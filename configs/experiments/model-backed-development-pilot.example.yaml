@@ -1,0 +1,107 @@
+# LIVE DEVELOPMENT-PILOT CANDIDATE TEMPLATE: intentionally non-executable as
+# checked in. Copy once per declared static profile. Replace every PASTE value
+# with one exact llama.cpp preflight identity, give each copy a unique
+# experiment_id/artifact_root/profile ID, and change only the declared base
+# profile values with the exact values in the checked-in candidate grid. No
+# sampling value is operator-chosen. `max_tokens` is fixed at 192 across the
+# entire grid and is never a selectable control dimension.
+#   static-balanced-v1:     0.7,  0.9,  40, 0.0, 192
+#   static-conservative-v1: 0.55, 0.85, 30, 0.0, 192
+#   static-exploratory-v1:  0.85, 0.95, 60, 0.1, 192
+schema_version: 1
+experiment_id: model-backed-development-pilot-PASTE_STATIC_PROFILE_ID
+dataset:
+  path: ../../datasets/development/phase3-baseline-development-v1.yaml
+  version: phase3-baseline-development-v1
+  purpose: development
+  expected_dataset_sha256: a6c41a046cb84bc9a806866a7393196784eb769118f74cbe4d44d0f3e247df97
+candidate_grid:
+  path: model-backed-development-pilot-candidate-grid.json
+  expected_sha256: 39fcead158f98e9f359f6d1aef13660046024edc37bf70e95b26a1ed904ac49a
+provider:
+  kind: llama_cpp
+  config_path: ../providers/llama_cpp.local.yaml
+  expected_identity:
+    provider_type: llama_cpp
+    implementation_version: llama-cpp-completion-http-v1
+    model_alias: PASTE_PREFLIGHT_MODEL_ALIAS
+    build_id: PASTE_PREFLIGHT_BUILD_ID
+    provider_config_hash: 0000000000000000000000000000000000000000000000000000000000000000
+    model_path: C:/PASTE/PREFLIGHT/MODEL/PATH/model.gguf
+    model_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    chat_template_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+  expected_effective_configuration_json: '{"PASTE":"the exact canonical expected_effective_configuration_json from preflight"}'
+policy_specs:
+  - kind: best_static
+  - kind: heuristic_adaptive
+  - kind: neural_persistent
+  - kind: neural_matched_history_state_reset
+  - kind: random_matched
+protocol:
+  schema_version: 1
+  implementation_version: model-backed-experiment-protocol-v1
+  run_tier: development_pilot
+  schedule:
+    sequence_count: 6
+    turns_per_sequence: 4
+    model_seed_count: 2
+    controller_seed_count: 1
+    policy_count: 5
+    logical_generation_count: 240
+  policy_ids:
+    - best_static
+    - heuristic_adaptive
+    - neural_matched_history_state_reset
+    - neural_persistent
+    - random_matched
+  efficacy_policy_ids:
+    - best_static
+    - heuristic_adaptive
+    - neural_persistent
+    - random_matched
+  focal_policy_id: neural_persistent
+  required_serious_comparator_ids:
+    - best_static
+    - heuristic_adaptive
+  negative_control_policy_ids:
+    - random_matched
+  attribution:
+    policy_id: neural_matched_history_state_reset
+    history_source_policy_id: neural_persistent
+model_seeds:
+  - 4101
+  - 4102
+controller_seeds:
+  - 5101
+base_decoding_profile_id: PASTE_STATIC_PROFILE_ID
+base_decoding_profile:
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  presence_penalty: 0.0
+  max_tokens: 192
+action_bounds:
+  temperature_delta: [-0.1, 0.1]
+  top_p_delta: [-0.05, 0.05]
+  top_k_delta: [-10, 10]
+  presence_penalty_delta: [-0.2, 0.2]
+decoding_bounds:
+  temperature: [0.01, 2.0]
+  top_p: [0.01, 1.0]
+  top_k: [0, 200]
+  presence_penalty: [-2.0, 2.0]
+metric_versions:
+  distinct_2: distinct-2gram-unicode-nfkc-casefold-whitespace-v1
+  distinct_3: distinct-3gram-unicode-nfkc-casefold-whitespace-v1
+  format_validity: validator-v1
+  instruction_adherence: validator-v1
+  late_window_repetition_ratio: late-quarter-unicode-nfkc-casefold-whitespace-v1
+  repeated_3_gram_ratio: repeated-3gram-unicode-nfkc-casefold-whitespace-v1
+  repeated_4_gram_ratio: repeated-4gram-unicode-nfkc-casefold-whitespace-v1
+  repetition_ratio: token-repetition-unicode-nfkc-casefold-whitespace-v1
+  response_length_tokens: unicode-nfkc-casefold-whitespace-v1
+  semantic_similarity: semantic-unavailable-v1
+  task_score: validator-v1
+decision_rule_version: development-pilot-no-scientific-decision-v1
+database_schema_version: 2
+artifact_root: ../../runs/model-backed-development-pilot-PASTE_STATIC_PROFILE_ID

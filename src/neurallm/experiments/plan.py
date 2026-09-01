@@ -24,6 +24,7 @@ from neurallm.domain.models import (
     ProviderIdentity,
 )
 from neurallm.domain.serialization import canonical_sha256
+from neurallm.evaluation.confirmatory import ConfirmatoryAnalysisSpec
 from neurallm.evaluation.models import EvaluationSpec
 from neurallm.evaluation.selection import StaticSelectionRecord
 from neurallm.experiments.config import LoadedExperimentConfig
@@ -38,6 +39,11 @@ from neurallm.experiments.dataset import (
 from neurallm.experiments.matching import (
     MatchedCoverageExpectation,
     materialize_matched_coverage,
+)
+from neurallm.experiments.protocol import (
+    ExperimentProtocol,
+    PreregistrationSeal,
+    RunTier,
 )
 from neurallm.metrics.deterministic import METRIC_VERSIONS
 from neurallm.metrics.validators import ValidatorSpec
@@ -93,6 +99,18 @@ class ExperimentPlan(_StrictFrozenModel):
     metric_versions: Mapping[str, str]
     decision_rule_version: str = Field(min_length=1)
     database_schema_version: int = Field(gt=0)
+    protocol: ExperimentProtocol | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    preregistration: PreregistrationSeal | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    confirmatory_analysis: ConfirmatoryAnalysisSpec | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     evaluation: EvaluationSpec | None = None
     evaluation_spec_sha256: str | None = Field(
         default=None,
@@ -103,6 +121,16 @@ class ExperimentPlan(_StrictFrozenModel):
         exclude_if=lambda value: value is None,
     )
     static_selection_result_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+    static_selection_evidence_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+    candidate_grid_sha256: str | None = Field(
         default=None,
         pattern=r"^[0-9a-f]{64}$",
         exclude_if=lambda value: value is None,
@@ -134,11 +162,181 @@ class ExperimentPlan(_StrictFrozenModel):
 
     @model_validator(mode="after")
     def _validate_evaluation_identity_and_coverage(self) -> Self:
+        if self.protocol is not None:
+            policy_ids = {turn.condition.policy_id for turn in self.turns}
+            if tuple(sorted(policy_ids)) != self.protocol.policy_ids:
+                raise ValueError("model-backed plan requires its exact five policy arms")
+            if self.decision_rule_version != self.protocol.decision_rule_version:
+                raise ValueError("model-backed plan has the wrong tier decision rule")
+            if self.database_schema_version != CURRENT_SCHEMA_VERSION:
+                raise ValueError("model-backed plan requires the current database schema")
+
+            schedule = self.protocol.schedule
+            sequence_indexes: dict[str, set[int]] = {}
+            for turn in self.turns:
+                condition = turn.condition
+                if (
+                    condition.experiment_id != self.experiment_id
+                    or condition.dataset_version != self.dataset_version
+                    or condition.provider_identity_id != self.provider_identity.identity_id
+                ):
+                    raise ValueError("model-backed turn identity differs from its plan")
+                sequence_indexes.setdefault(condition.prompt_sequence_id, set()).add(
+                    condition.turn_index
+                )
+            if len(sequence_indexes) != schedule.sequence_count:
+                raise ValueError("protocol sequence_count does not match planned sequences")
+            expected_indexes = set(range(schedule.turns_per_sequence))
+            if any(indexes != expected_indexes for indexes in sequence_indexes.values()):
+                raise ValueError("protocol turns_per_sequence does not match planned turns")
+
+            model_seeds = tuple(sorted({turn.condition.model_seed for turn in self.turns}))
+            controller_seeds = tuple(
+                sorted({turn.condition.controller_seed for turn in self.turns})
+            )
+            if len(model_seeds) != schedule.model_seed_count:
+                raise ValueError("protocol model_seed_count does not match planned seeds")
+            if len(controller_seeds) != schedule.controller_seed_count:
+                raise ValueError("protocol controller_seed_count does not match planned seeds")
+            if len(self.turns) != schedule.logical_generation_count:
+                raise ValueError("protocol logical_generation_count does not match planned turns")
+
+            expected_coordinates = {
+                (sequence_id, turn_index, policy_id, model_seed, controller_seed)
+                for sequence_id in sequence_indexes
+                for turn_index in range(schedule.turns_per_sequence)
+                for policy_id in self.protocol.policy_ids
+                for model_seed in model_seeds
+                for controller_seed in controller_seeds
+            }
+            actual_coordinates = {
+                (
+                    turn.condition.prompt_sequence_id,
+                    turn.condition.turn_index,
+                    turn.condition.policy_id,
+                    turn.condition.model_seed,
+                    turn.condition.controller_seed,
+                )
+                for turn in self.turns
+            }
+            if actual_coordinates != expected_coordinates:
+                raise ValueError("model-backed plan does not contain the exact schedule grid")
+
+            current_inputs: dict[tuple[str, int, int, int], tuple[object, ...]] = {}
+            base_profile_ids: set[str] = set()
+            for turn in self.turns:
+                condition = turn.condition
+                base_profile_ids.add(condition.base_decoding_profile_id)
+                coordinate = (
+                    condition.prompt_sequence_id,
+                    condition.turn_index,
+                    condition.model_seed,
+                    condition.controller_seed,
+                )
+                inputs = (
+                    turn.prompt_case_id,
+                    turn.prompt_family,
+                    turn.prompt_features,
+                    turn.prompt,
+                    turn.validator,
+                    turn.decoding_parameters,
+                )
+                previous = current_inputs.setdefault(coordinate, inputs)
+                if previous != inputs:
+                    raise ValueError("model-backed arms must share exact current inputs")
+            if len(base_profile_ids) != 1:
+                raise ValueError("model-backed arms must share one base decoding profile")
+
+            tier = self.protocol.run_tier
+            if tier in {RunTier.ENGINEERING_SMOKE, RunTier.DEVELOPMENT_PILOT}:
+                if self.dataset_purpose is not DatasetPurpose.DEVELOPMENT:
+                    raise ValueError("smoke and pilot plans require development-purpose data")
+                if (
+                    self.preregistration is not None
+                    or self.confirmatory_analysis is not None
+                    or self.evaluation is not None
+                    or self.evaluation_spec_sha256 is not None
+                    or self.static_selection_record is not None
+                    or self.static_selection_result_sha256 is not None
+                    or self.static_selection_evidence_sha256 is not None
+                    or self.matched_units
+                ):
+                    raise ValueError("smoke and pilot plans cannot contain confirmatory evidence")
+                if tier is RunTier.ENGINEERING_SMOKE:
+                    if self.candidate_grid_sha256 is not None:
+                        raise ValueError("engineering-smoke plan cannot carry a candidate grid")
+                elif self.candidate_grid_sha256 is None:
+                    raise ValueError("development-pilot plan requires its candidate-grid identity")
+                return self
+
+            if self.candidate_grid_sha256 is not None:
+                raise ValueError("confirmatory plan cannot carry a candidate grid")
+            if self.dataset_purpose is not DatasetPurpose.EVALUATION or self.dataset_seal is None:
+                raise ValueError("confirmatory plan requires a sealed evaluation dataset")
+            if self.confirmatory_analysis is None:
+                raise ValueError("confirmatory plan requires frozen final analysis rules")
+            if self.evaluation is None or (
+                self.evaluation_spec_sha256 != canonical_sha256(self.evaluation)
+            ):
+                raise ValueError("confirmatory plan requires its exact EvaluationSpec identity")
+            if self.static_selection_record is None or self.static_selection_result_sha256 is None:
+                raise ValueError("confirmatory plan requires frozen static-selection evidence")
+            if self.static_selection_evidence_sha256 is None:
+                raise ValueError("confirmatory plan requires model-backed selection provenance")
+            if (
+                self.static_selection_result_sha256
+                != self.static_selection_record.selection_result_sha256
+            ):
+                raise ValueError("static selection hash does not match its canonical evidence")
+            expected_ids = tuple(
+                sorted(
+                    condition_id
+                    for unit in self.matched_units
+                    for condition_id in unit.expected_condition_ids
+                )
+            )
+            actual_ids = tuple(sorted(turn.condition.condition_id for turn in self.turns))
+            if not self.matched_units or expected_ids != actual_ids:
+                raise ValueError("confirmatory matched coverage does not exactly cover plan turns")
+            unit_keys = tuple(unit.unit_key for unit in self.matched_units)
+            if len(unit_keys) != len(set(unit_keys)):
+                raise ValueError("confirmatory matched coverage contains duplicate analysis units")
+            recovery_events = {
+                event.prompt_sequence_id: event
+                for event in self.confirmatory_analysis.recovery_events
+            }
+            if set(recovery_events) != set(sequence_indexes):
+                raise ValueError("confirmatory recovery events must exactly cover prompt sequences")
+            for sequence_id, indexes in sequence_indexes.items():
+                event = recovery_events[sequence_id]
+                if event.stressor_turn_index not in indexes or any(
+                    index not in indexes for index in event.recovery_turn_indexes
+                ):
+                    raise ValueError("confirmatory recovery event references an absent turn")
+            if self.preregistration is not None:
+                if (
+                    self.preregistration.experiment_id != self.experiment_id
+                    or self.preregistration.run_tier != tier.value
+                    or self.preregistration.scientific_identity_sha256
+                    != self.scientific_identity_sha256
+                ):
+                    raise ValueError(
+                        "preregistration seal does not match the confirmatory scientific identity"
+                    )
+            return self
+
+        if self.preregistration is not None:
+            raise ValueError("preregistration requires a model-backed protocol")
+        if self.confirmatory_analysis is not None:
+            raise ValueError("confirmatory analysis rules require a model-backed protocol")
+        if self.candidate_grid_sha256 is not None:
+            raise ValueError("candidate-grid identity requires a development-pilot protocol")
         if self.evaluation is None:
             if (
                 self.evaluation_spec_sha256 is not None
                 or self.static_selection_record is not None
                 or self.static_selection_result_sha256 is not None
+                or self.static_selection_evidence_sha256 is not None
                 or self.matched_units
             ):
                 raise ValueError("Phase 2 plan cannot contain Phase 3 evaluation evidence")
@@ -188,6 +386,8 @@ class ExperimentPlan(_StrictFrozenModel):
             raise ValueError("evaluation_spec_sha256 does not match EvaluationSpec")
         if self.static_selection_record is None or self.static_selection_result_sha256 is None:
             raise ValueError("Phase 3 plan requires frozen static-selection evidence")
+        if self.static_selection_evidence_sha256 is not None:
+            raise ValueError("Phase 3 legacy plans cannot claim model-backed selection provenance")
         if (
             self.static_selection_result_sha256
             != self.static_selection_record.selection_result_sha256
@@ -212,14 +412,23 @@ class ExperimentPlan(_StrictFrozenModel):
 
     @property
     def scientific_identity_sha256(self) -> str:
-        return canonical_sha256(self)
+        if self.preregistration is None:
+            return canonical_sha256(self)
+        return canonical_sha256(self.model_copy(update={"preregistration": None}))
 
 
 def build_plan(
     loaded_config: LoadedExperimentConfig,
     loaded_dataset: LoadedDataset,
+    *,
+    require_frozen_preregistration: bool = True,
 ) -> ExperimentPlan:
-    """Expand inputs in a host- and input-iteration-independent order."""
+    """Expand inputs in a host- and input-iteration-independent order.
+
+    Confirmatory callers require a matching published seal by default.  A
+    preregistration publisher may explicitly disable that final gate to compute
+    the candidate scientific identity before creating the seal.
+    """
 
     if not isinstance(loaded_config, LoadedExperimentConfig):
         raise TypeError("loaded_config must be a LoadedExperimentConfig")
@@ -242,9 +451,18 @@ def build_plan(
         spec.history_access == "matched_focal_previous_response"
         for spec in (config.policy_specs or ())
     )
-    if has_matched_history and config.dataset.purpose is not DatasetPurpose.DEVELOPMENT:
+    if (
+        has_matched_history
+        and config.protocol is None
+        and config.dataset.purpose is not DatasetPurpose.DEVELOPMENT
+    ):
         raise ValueError("Phase 4 requires a pinned development-purpose dataset")
-    if config.evaluation is None:
+    if config.protocol is not None:
+        if config.database_schema_version != CURRENT_SCHEMA_VERSION:
+            raise ValueError("model-backed protocol requires the current database schema version")
+        if config.decision_rule_version != config.protocol.decision_rule_version:
+            raise ValueError("configured decision rule version does not match model-backed tier")
+    elif config.evaluation is None:
         expected_rule = (
             PHASE4_DECISION_RULE_VERSION if has_matched_history else PHASE2_DECISION_RULE_VERSION
         )
@@ -353,7 +571,7 @@ def build_plan(
         )
     )
 
-    return ExperimentPlan(
+    plan = ExperimentPlan(
         experiment_id=config.experiment_id,
         dataset_version=dataset.version,
         dataset_purpose=dataset.purpose,
@@ -369,24 +587,40 @@ def build_plan(
         metric_versions=config.metric_versions,
         decision_rule_version=config.decision_rule_version,
         database_schema_version=config.database_schema_version,
+        protocol=config.protocol,
+        preregistration=config.preregistration,
+        confirmatory_analysis=config.confirmatory_analysis,
         evaluation=config.evaluation,
         evaluation_spec_sha256=config.evaluation_spec_sha256,
-        static_selection_record=config.static_selection_record,
+        static_selection_record=config.resolved_static_selection_record,
         static_selection_result_sha256=(
             None
-            if config.static_selection_record is None
-            else config.static_selection_record.selection_result_sha256
+            if config.resolved_static_selection_record is None
+            else config.resolved_static_selection_record.selection_result_sha256
         ),
+        static_selection_evidence_sha256=config.static_selection_evidence_sha256,
+        candidate_grid_sha256=config.candidate_grid_sha256,
         matched_units=matched_units,
         turns=tuple(turns),
     )
+    if (
+        require_frozen_preregistration
+        and plan.protocol is not None
+        and plan.protocol.run_tier is RunTier.CONFIRMATORY
+        and plan.preregistration is None
+    ):
+        raise ValueError("confirmatory plan requires a frozen preregistration seal")
+    return plan
 
 
 __all__ = [
     "PHASE2_DECISION_RULE_VERSION",
     "PHASE3_DECISION_RULE_VERSION",
     "PHASE4_DECISION_RULE_VERSION",
+    "ExperimentProtocol",
     "ExperimentPlan",
     "PlannedTurn",
+    "PreregistrationSeal",
+    "RunTier",
     "build_plan",
 ]

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from collections.abc import Mapping
 from hashlib import sha256
 from math import isclose, isfinite
+from pathlib import Path
 from typing import Final, Self, cast
 from urllib.parse import urlsplit
 
@@ -19,7 +22,7 @@ from pydantic import (
     model_validator,
 )
 
-from neurallm.domain.models import DecodingParameters, ProviderIdentity
+from neurallm.domain.models import DecodingParameters, ProviderIdentity, Sha256Hex
 from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.providers.base import (
     DECODING_FLOAT_ABSOLUTE_TOLERANCE,
@@ -78,6 +81,7 @@ class LlamaCppProviderConfig(_StrictFrozenModel):
     base_url: str
     model_alias: str
     model_path: str
+    model_sha256: Sha256Hex
     build_id: str
     chat_template_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     connect_timeout_seconds: float = Field(gt=0.0, allow_inf_nan=False)
@@ -95,15 +99,26 @@ class LlamaCppProviderConfig(_StrictFrozenModel):
             raise ValueError("base_url must be an absolute HTTP(S) URL")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("base_url must not contain credentials")
-        if parsed.query or parsed.fragment:
+        if "?" in value or "#" in value or parsed.query or parsed.fragment:
             raise ValueError("base_url must not contain a query or fragment")
         return value.rstrip("/")
 
-    @field_validator("model_alias", "model_path", "build_id")
+    @field_validator("model_alias", "build_id")
     @classmethod
     def _validate_non_blank_identity_field(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("identity fields must not be blank")
+        return value
+
+    @field_validator("model_path")
+    @classmethod
+    def _validate_absolute_model_path(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("model_path must be non-blank with no surrounding whitespace")
+        if not Path(value).is_absolute():
+            raise ValueError(
+                "model_path must be an absolute client-local path with no user expansion"
+            )
         return value
 
     @property
@@ -124,6 +139,7 @@ class LlamaCppEffectiveConfiguration(_StrictFrozenModel):
     client_config: LlamaCppProviderConfig
     model_alias: str
     model_path: str
+    model_sha256: Sha256Hex
     build_id: str
     chat_template: str
     chat_template_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -135,6 +151,7 @@ class LlamaCppEffectiveConfiguration(_StrictFrozenModel):
         if (
             self.model_alias != self.client_config.model_alias
             or self.model_path != self.client_config.model_path
+            or self.model_sha256 != self.client_config.model_sha256
             or self.build_id != self.client_config.build_id
             or self.chat_template_sha256 != self.client_config.chat_template_sha256
         ):
@@ -233,8 +250,110 @@ def llama_cpp_provider_identity(
         build_id=effective_configuration.build_id,
         provider_config_hash=canonical_sha256(effective_configuration),
         model_path=effective_configuration.model_path,
+        model_sha256=effective_configuration.model_sha256,
         chat_template_sha256=effective_configuration.chat_template_sha256,
     )
+
+
+def require_llama_cpp_provider_binding(
+    provider_identity: ProviderIdentity,
+    effective_configuration_json: str,
+) -> LlamaCppEffectiveConfiguration:
+    """Parse and prove exact identity/configuration agreement for claim evidence."""
+
+    if not isinstance(provider_identity, ProviderIdentity):
+        raise TypeError("provider_identity must be a ProviderIdentity")
+    if not isinstance(effective_configuration_json, str):
+        raise TypeError("effective_configuration_json must be a string")
+    if provider_identity.provider_type != "llama_cpp":
+        raise ValueError("provider identity must be llama_cpp")
+    effective = LlamaCppEffectiveConfiguration.model_validate_json(effective_configuration_json)
+    if canonical_json(effective) != effective_configuration_json:
+        raise ValueError("llama_cpp effective configuration must be canonical JSON")
+    if llama_cpp_provider_identity(effective) != provider_identity:
+        raise ValueError("llama_cpp provider identity disagrees with effective configuration")
+    return effective
+
+
+_ModelArtifactFingerprint = tuple[int, int, int, int, int]
+_MODEL_ARTIFACT_PROBE_BYTES = 1024 * 1024
+
+
+def _artifact_fingerprint(stat_result: os.stat_result) -> _ModelArtifactFingerprint:
+    return (
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+    )
+
+
+def _artifact_probe_sha256(size: int, first: bytes, last: bytes) -> str:
+    digest = sha256()
+    digest.update(b"llama-cpp-model-probe-v1\0")
+    digest.update(size.to_bytes(16, "big"))
+    digest.update(first)
+    digest.update(last)
+    return digest.hexdigest()
+
+
+def _measure_model_artifact(
+    model_path: str,
+) -> tuple[str, _ModelArtifactFingerprint, str]:
+    path = Path(model_path)
+    if not path.is_absolute():
+        raise LlamaCppIdentityDriftError(
+            "model_path must be an absolute client-local path for artifact verification"
+        )
+    try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise LlamaCppIdentityDriftError(
+                "model artifact is not a readable client-local regular file"
+            )
+        with path.open("rb") as artifact:
+            before_stat = os.fstat(artifact.fileno())
+            if not stat.S_ISREG(before_stat.st_mode):
+                raise LlamaCppIdentityDriftError(
+                    "model artifact is not a readable client-local regular file"
+                )
+            before = _artifact_fingerprint(before_stat)
+            digest = sha256()
+            first = b""
+            last = b""
+            for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+                digest.update(chunk)
+                if len(first) < _MODEL_ARTIFACT_PROBE_BYTES:
+                    first += chunk[: _MODEL_ARTIFACT_PROBE_BYTES - len(first)]
+                last = (last + chunk)[-_MODEL_ARTIFACT_PROBE_BYTES:]
+            after = _artifact_fingerprint(os.fstat(artifact.fileno()))
+        current = _artifact_fingerprint(path.stat())
+    except (OSError, ValueError) as error:
+        raise LlamaCppIdentityDriftError(
+            "model artifact is not a readable client-local regular file"
+        ) from error
+    if before[:4] != after[:4] or after[:4] != current[:4]:
+        raise LlamaCppIdentityDriftError("model artifact changed while its digest was measured")
+    return digest.hexdigest(), current, _artifact_probe_sha256(before[2], first, last)
+
+
+def _probe_model_artifact(model_path: str) -> tuple[str, _ModelArtifactFingerprint]:
+    path = Path(model_path)
+    try:
+        with path.open("rb") as artifact:
+            before = _artifact_fingerprint(os.fstat(artifact.fileno()))
+            first = artifact.read(_MODEL_ARTIFACT_PROBE_BYTES)
+            artifact.seek(max(0, before[2] - _MODEL_ARTIFACT_PROBE_BYTES))
+            last = artifact.read(_MODEL_ARTIFACT_PROBE_BYTES)
+            after = _artifact_fingerprint(os.fstat(artifact.fileno()))
+        current = _artifact_fingerprint(path.stat())
+    except (OSError, ValueError) as error:
+        raise LlamaCppIdentityDriftError(
+            "model artifact is unavailable before completion dispatch"
+        ) from error
+    if before[:4] != after[:4] or after[:4] != current[:4]:
+        raise LlamaCppIdentityDriftError("model artifact changed during its dispatch probe")
+    return _artifact_probe_sha256(before[2], first, last), current
 
 
 class LlamaCppProvider:
@@ -251,6 +370,8 @@ class LlamaCppProvider:
         "_config",
         "_effective_configuration",
         "_last_raw_response_sha256",
+        "_model_artifact_fingerprint",
+        "_model_artifact_probe_sha256",
         "_provider_identity",
     )
 
@@ -270,11 +391,19 @@ class LlamaCppProvider:
         )
         self._last_raw_response_sha256: str | None = None
         try:
+            (
+                self._model_artifact_fingerprint,
+                self._model_artifact_probe_sha256,
+            ) = self._verify_model_artifact()
             effective_configuration = self._inspect_effective_configuration()
             provider_identity = llama_cpp_provider_identity(effective_configuration)
-        except Exception:
+        except Exception as exc:
             self._client.close()
-            raise
+            if isinstance(exc, LlamaCppProviderError):
+                raise
+            raise LlamaCppProviderError(
+                f"llama.cpp provider construction failed: {type(exc).__name__}: {exc}"
+            ) from exc
         self._effective_configuration = effective_configuration
         self._provider_identity = provider_identity
 
@@ -302,6 +431,14 @@ class LlamaCppProvider:
 
         return self._last_raw_response_sha256
 
+    def verify_model_artifact(self) -> None:
+        """Rehash the local model artifact and require the configured digest."""
+
+        (
+            self._model_artifact_fingerprint,
+            self._model_artifact_probe_sha256,
+        ) = self._verify_model_artifact()
+
     def close(self) -> None:
         """Close the owned synchronous HTTP client."""
 
@@ -325,6 +462,7 @@ class LlamaCppProvider:
                 "llama.cpp requires a deterministic seed in range 0..4294967294"
             )
 
+        self._require_stable_model_artifact()
         self._require_stable_identity()
         parameters = request.decoding_parameters
         payload: dict[str, object] = {
@@ -436,6 +574,7 @@ class LlamaCppProvider:
             client_config=self._config,
             model_alias=self._config.model_alias,
             model_path=model_path,
+            model_sha256=self._config.model_sha256,
             build_id=build_id,
             chat_template=chat_template,
             chat_template_sha256=template_sha256,
@@ -454,6 +593,27 @@ class LlamaCppProvider:
             raise LlamaCppIdentityDriftError(
                 "llama.cpp identity or effective configuration drifted before dispatch"
             )
+
+    def _require_stable_model_artifact(self) -> None:
+        probe_sha256, current = _probe_model_artifact(self._config.model_path)
+        if (
+            current != self._model_artifact_fingerprint
+            or probe_sha256 != self._model_artifact_probe_sha256
+        ):
+            (
+                self._model_artifact_fingerprint,
+                self._model_artifact_probe_sha256,
+            ) = self._verify_model_artifact()
+
+    def _verify_model_artifact(self) -> tuple[_ModelArtifactFingerprint, str]:
+        observed_sha256, fingerprint, probe_sha256 = _measure_model_artifact(
+            self._config.model_path
+        )
+        if observed_sha256 != self._config.model_sha256:
+            raise LlamaCppIdentityDriftError(
+                "model artifact SHA-256 does not match explicit provider configuration"
+            )
+        return fingerprint, probe_sha256
 
     def _validate_completion(
         self,
@@ -535,4 +695,5 @@ __all__ = [
     "LlamaCppProviderError",
     "LlamaCppTransportError",
     "llama_cpp_provider_identity",
+    "require_llama_cpp_provider_binding",
 ]
