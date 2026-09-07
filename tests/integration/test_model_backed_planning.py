@@ -164,7 +164,7 @@ def test_live_smoke_example_is_an_unsealed_llama_template_for_exact_twenty_reque
     payload = load_yaml_mapping(CONFIG_ROOT / "model-backed-live-smoke.example.yaml")
 
     assert payload["provider"]["kind"] == "llama_cpp"
-    assert payload["provider"]["config_path"] == "../providers/llama_cpp.local.yaml"
+    assert payload["provider"]["config_path"] == "../providers/llama_cpp.answer-v2.local.yaml"
     assert "PASTE" in payload["provider"]["expected_identity"]["model_alias"]
     assert "PASTE" in payload["provider"]["expected_effective_configuration_json"]
     assert payload["protocol"]["run_tier"] == "engineering_smoke"
@@ -191,6 +191,7 @@ def test_live_smoke_example_is_an_unsealed_llama_template_for_exact_twenty_reque
 )
 def test_new_live_templates_declare_both_corrected_contracts(filename: str) -> None:
     payload = load_yaml_mapping(CONFIG_ROOT / filename)
+    assert payload["provider"]["config_path"] == "../providers/llama_cpp.answer-v2.local.yaml"
     assert payload["metric_versions"] == FINAL_ANSWER_METRIC_VERSIONS
     assert (
         payload["provider"]["expected_identity"]["implementation_version"]

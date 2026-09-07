@@ -1,7 +1,7 @@
-# LIVE DEVELOPMENT-PILOT CANDIDATE TEMPLATE: intentionally non-executable as
+# LIVE DEVELOPMENT-PILOT CANDIDATE TEMPLATE: intentionally non-executable as checked in.
 # Use the audited llama_cpp.qwen35-no-thinking.example.yaml provider and v2
 # answer metrics below. Rebuild old local candidates; do not mix v1/v2 evidence.
-# checked in. Copy once per declared static profile. Replace every PASTE value
+# Copy once per declared static profile to a NEW ignored file. Replace every PASTE value
 # with one exact llama.cpp preflight identity, give each copy a unique
 # experiment_id/artifact_root/profile ID, and change only the declared base
 # profile values with the exact values in the checked-in candidate grid. No
@@ -22,7 +22,7 @@ candidate_grid:
   expected_sha256: 39fcead158f98e9f359f6d1aef13660046024edc37bf70e95b26a1ed904ac49a
 provider:
   kind: llama_cpp
-  config_path: ../providers/llama_cpp.local.yaml
+  config_path: ../providers/llama_cpp.answer-v2.local.yaml
   expected_identity:
     provider_type: llama_cpp
     implementation_version: llama-cpp-chat-template-http-v2

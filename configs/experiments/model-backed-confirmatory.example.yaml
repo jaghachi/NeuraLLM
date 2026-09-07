@@ -23,7 +23,7 @@ provider:
   # These values deliberately fail identity validation until replaced together
   # with the exact output of a machine-local llama.cpp preflight.
   kind: llama_cpp
-  config_path: ../providers/llama_cpp.local.yaml
+  config_path: ../providers/llama_cpp.answer-v2.local.yaml
   expected_identity:
     provider_type: llama_cpp
     implementation_version: llama-cpp-chat-template-http-v2

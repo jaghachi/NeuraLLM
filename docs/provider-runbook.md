@@ -97,6 +97,7 @@ Do not put credentials in `base_url` or commit local machine identity accidental
 | `model_sha256` | Lowercase SHA-256 measured from the complete local model artifact |
 | `build_id` | Exact non-blank `build_info` returned by `/props` |
 | `chat_template_sha256` | Lowercase SHA-256 of the raw `/props` `chat_template` UTF-8 text |
+| `prompt_format` | Explicit `chat_template_no_thinking_v1` for new audited Qwen3.5 runs; omission preserves legacy raw-v1 behavior |
 | `connect_timeout_seconds` | Explicit positive finite connect timeout |
 | `read_timeout_seconds` | Explicit positive finite read timeout |
 | `write_timeout_seconds` | Explicit positive finite write timeout |
@@ -114,12 +115,27 @@ exact expected `ProviderIdentity`. Inspect that identity with the first-class
 preflight command, using only an explicit machine-local file:
 
 ```powershell
-neurallm preflight --provider-config configs/providers/llama_cpp.local.yaml
+$answerV2Provider = 'configs/providers/llama_cpp.answer-v2.local.yaml'
+if (Test-Path -LiteralPath $answerV2Provider) {
+    throw 'Provider file already exists. Preserve it and inspect its identity before reuse.'
+}
+Copy-Item -LiteralPath configs/providers/llama_cpp.qwen35-no-thinking.example.yaml -Destination $answerV2Provider -ErrorAction Stop
+```
+
+This copy is a one-time setup step, not a command to repeat before each run.
+Replace its machine-local placeholders, then perform fresh preflight. If the
+file already exists, reuse it only after checking that it is the intended v2
+configuration; never overwrite a file already bound into historical evidence.
+
+```powershell
+neurallm preflight --provider-config configs/providers/llama_cpp.answer-v2.local.yaml
 ```
 
 This is a deliberate network operation, but it first hashes the local artifact,
-then performs exactly one `GET /health` and one `GET /props`; it never requests
-`/completion`. The provider configuration is not read from an environment
+then performs exactly one `GET /health` and one `GET /props`. The explicit v2
+mode also performs one fixed `POST /apply-template` compatibility probe with
+zero inference; preflight never requests `/completion`. The provider
+configuration is not read from an environment
 variable. Success emits one
 canonical JSON object containing `expected_identity`, `provider_identity_id`,
 `expected_effective_configuration_json`, and `completion_requested: false`.
@@ -131,10 +147,10 @@ Copy `expected_identity` and the exact one-line
 ```yaml
 provider:
   kind: llama_cpp
-  config_path: ../providers/llama_cpp.local.yaml
+  config_path: ../providers/llama_cpp.answer-v2.local.yaml
   expected_identity:
     provider_type: llama_cpp
-    implementation_version: llama-cpp-completion-http-v1
+    implementation_version: llama-cpp-chat-template-http-v2
     model_alias: replace-with-preflight-output
     build_id: replace-with-preflight-output
     provider_config_hash: replace-with-64-character-preflight-output
@@ -171,25 +187,33 @@ closed; there is no remote attestation or download fallback.
 
 The checked-in confirmatory file is an unsealed template, not an executable
 claim configuration. Copy it to one ignored draft beside the final ignored
-configuration. Both experiment files reference the same provider filename used
-by preflight:
+configuration only after the corrected live smoke and v2 pilot selection gates
+pass. Reuse the same validated v2 provider file used by those pilots and fresh
+preflight; do not recopy a provider template over it. Both experiment files
+reference `../providers/llama_cpp.answer-v2.local.yaml`:
 
 ```powershell
-Copy-Item configs/providers/llama_cpp.example.yaml configs/providers/llama_cpp.local.yaml
-Copy-Item configs/experiments/model-backed-confirmatory.example.yaml configs/experiments/model-backed-confirmatory.preregistration.local.yaml
+$answerV2Draft = 'configs/experiments/model-backed-confirmatory-answer-v2.preregistration.local.yaml'
+if (Test-Path -LiteralPath $answerV2Draft) {
+    throw 'Confirmatory draft already exists. Preserve it; choose a new filename for a new plan.'
+}
+Copy-Item -LiteralPath configs/experiments/model-backed-confirmatory.example.yaml -Destination $answerV2Draft -ErrorAction Stop
 ```
 
 Populate the provider fields in the draft from the exact preflight output and
 replace its `static_selection_evidence` placeholders with the path and hash of
-the published, finalized development-pilot selection artifact. Then publish the
+the published, finalized v2 development-pilot selection artifact. Give the
+draft a fresh experiment ID and artifact root if the template's defaults already
+belong to a run; changing only the filename does not change the run directory.
+Then publish the
 seal and materialize a separate executable configuration in one provider-free
 operation:
 
 ```powershell
 neurallm preregister `
-  --config configs/experiments/model-backed-confirmatory.preregistration.local.yaml `
-  --output configs/preregistration/model-backed-confirmatory.seal.json `
-  --sealed-config-output configs/experiments/model-backed-confirmatory.local.yaml
+  --config configs/experiments/model-backed-confirmatory-answer-v2.preregistration.local.yaml `
+  --output configs/preregistration/model-backed-confirmatory-answer-v2.seal.json `
+  --sealed-config-output configs/experiments/model-backed-confirmatory-answer-v2.local.yaml
 ```
 
 The command does not construct a provider or request network access. It validates
@@ -209,16 +233,16 @@ clean worktree before any confirmatory execution. Validate the executable
 handoff without constructing the provider or making HTTP requests:
 
 ```powershell
-neurallm validate --config configs/experiments/model-backed-confirmatory.local.yaml
-neurallm plan --config configs/experiments/model-backed-confirmatory.local.yaml
-neurallm run --config configs/experiments/model-backed-confirmatory.local.yaml --dry-run
+neurallm validate --config configs/experiments/model-backed-confirmatory-answer-v2.local.yaml
+neurallm plan --config configs/experiments/model-backed-confirmatory-answer-v2.local.yaml
+neurallm run --config configs/experiments/model-backed-confirmatory-answer-v2.local.yaml --dry-run
 ```
 
 Only after separate live-provider authorization and with a clean worktree does
 the confirmatory execution command cross the provider boundary:
 
 ```powershell
-neurallm run --config configs/experiments/model-backed-confirmatory.local.yaml --execute --allow-live-provider
+neurallm run --config configs/experiments/model-backed-confirmatory-answer-v2.local.yaml --execute --allow-live-provider
 ```
 
 If any scientific input changes, publish a new seal and sealed configuration;
@@ -267,17 +291,20 @@ mount) who excludes that rewrite-and-restore behavior.
 The live test is excluded by default. It requires both the `live` marker and the
 complete `NEURALLM_LIVE_LLAMA_CONFIG_JSON` payload. That variable belongs only
 to the opt-in test harness; the provider itself does not use it as fallback
-configuration.
+configuration. This is a separate, explicitly authorized generation, not part
+of the 20-generation experiment schedule. The example selects the same audited
+Qwen3.5 v2 mode; replace its identity fields from the intended server.
 
 ```powershell
 $livePayload = @{
     provider = @{
-        base_url = "http://127.0.0.1:8080"
+        base_url = "http://127.0.0.1:8081"
         model_alias = "replace-with-explicit-alias"
         model_path = "C:/models/replace-with-model.gguf"
         model_sha256 = "replace-with-64-character-model-hash"
         build_id = "replace-with-build-id"
-        chat_template_sha256 = "replace-with-64-character-hash"
+        chat_template_sha256 = "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715"
+        prompt_format = "chat_template_no_thinking_v1"
         connect_timeout_seconds = 5.0
         read_timeout_seconds = 120.0
         write_timeout_seconds = 10.0
