@@ -56,6 +56,7 @@ class GenerationMetadata(_StrictFrozenModel):
         "request_sha256_v1",
         "fake_provider_visible_sha256_v2",
         "llama_cpp_completion_http_v1",
+        "llama_cpp_chat_template_http_v2",
     ] = "request_sha256_v1"
     provider_request_json: str | None = None
     provider_request_sha256: Sha256Hex | None = None
@@ -86,7 +87,10 @@ class GenerationMetadata(_StrictFrozenModel):
         has_protocol_evidence = all(value is not None for value in values)
         if any(value is not None for value in values) != has_protocol_evidence:
             raise ValueError("provider request/response payloads and hashes must be complete")
-        requires_protocol_evidence = self.generation_method == "llama_cpp_completion_http_v1"
+        requires_protocol_evidence = self.generation_method in {
+            "llama_cpp_completion_http_v1",
+            "llama_cpp_chat_template_http_v2",
+        }
         if has_protocol_evidence != requires_protocol_evidence:
             raise ValueError("generation method and provider protocol evidence disagree")
         if has_protocol_evidence:
@@ -118,9 +122,20 @@ class GenerationResponse(_StrictFrozenModel):
     @model_validator(mode="after")
     def _validate_provider_protocol_pair(self) -> Self:
         llama_identity = self.provider_identity.provider_type == "llama_cpp"
-        llama_protocol = self.raw_metadata.generation_method == "llama_cpp_completion_http_v1"
+        llama_protocol = self.raw_metadata.generation_method in {
+            "llama_cpp_completion_http_v1",
+            "llama_cpp_chat_template_http_v2",
+        }
         if llama_identity != llama_protocol:
             raise ValueError("llama_cpp provider identity and generation protocol must agree")
+        if llama_identity:
+            expected_version = (
+                "llama-cpp-chat-template-http-v2"
+                if self.raw_metadata.generation_method == "llama_cpp_chat_template_http_v2"
+                else "llama-cpp-completion-http-v1"
+            )
+            if self.provider_identity.implementation_version != expected_version:
+                raise ValueError("llama_cpp implementation version and generation protocol differ")
         return self
 
 

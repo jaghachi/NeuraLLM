@@ -191,16 +191,31 @@ The command surface is machine-readable and supports the historical Phase 2
 smoke configuration, Phase 3 offline fixtures, the Phase 4 causal harness, and
 the provider-free and explicitly gated portions of the Phase 5 protocol:
 
-Before using the llama.cpp commands, copy the checked-in examples to ignored
-machine-local files and replace every placeholder with values from the same
-local server and model. The provider configuration requires the lowercase
-SHA-256 of the complete model artifact at an absolute client-readable path:
+For new llama.cpp runs, use the audited Qwen3.5 no-thinking provider example.
+Create fresh ignored machine-local files and replace every placeholder with
+values from the same local server and model. The provider configuration requires
+the lowercase SHA-256 of the complete model artifact at an absolute
+client-readable path. These guards preserve existing files, including the
+original smoke configuration; if a target exists, stop and inspect it. Reuse an
+existing v2 provider file only deliberately after verifying its contents and
+fresh preflight, or choose new filenames and update all matching references:
 
 ```powershell
-Copy-Item configs/providers/llama_cpp.example.yaml configs/providers/llama_cpp.local.yaml
-Copy-Item configs/experiments/model-backed-confirmatory.example.yaml configs/experiments/model-backed-confirmatory.preregistration.local.yaml
-Copy-Item configs/experiments/model-backed-live-smoke.example.yaml configs/experiments/model-backed-live-smoke.local.yaml
+$providerConfigTarget = 'configs/providers/llama_cpp.answer-v2.local.yaml'
+$confirmatoryDraftTarget = 'configs/experiments/model-backed-confirmatory-answer-v2.preregistration.local.yaml'
+$smokeConfigTarget = 'configs/experiments/model-backed-live-smoke-answer-v2.local.yaml'
+foreach ($setupTarget in @($providerConfigTarget, $confirmatoryDraftTarget, $smokeConfigTarget)) {
+    if (Test-Path -LiteralPath $setupTarget) { throw "Refusing to overwrite $setupTarget" }
+}
+Copy-Item -LiteralPath configs/providers/llama_cpp.qwen35-no-thinking.example.yaml -Destination $providerConfigTarget -ErrorAction Stop
+Copy-Item -LiteralPath configs/experiments/model-backed-confirmatory.example.yaml -Destination $confirmatoryDraftTarget -ErrorAction Stop
+Copy-Item -LiteralPath configs/experiments/model-backed-live-smoke.example.yaml -Destination $smokeConfigTarget -ErrorAction Stop
 ```
+
+The commands below are a reference catalog, not a batch to run. Replace the
+placeholders and bind the observed provider identity first. Preregistration and
+live execution require their preceding smoke/pilot gates and explicit execution
+authorization; merely copying a template does not satisfy those prerequisites.
 
 ```powershell
 neurallm status
@@ -211,20 +226,20 @@ neurallm status `
   --run-dir runs/development-pilot-conservative `
   --run-dir runs/development-pilot-exploratory `
   --candidate-grid configs/experiments/model-backed-development-pilot-candidate-grid.json
-neurallm preflight --provider-config configs/providers/llama_cpp.local.yaml
+neurallm preflight --provider-config configs/providers/llama_cpp.answer-v2.local.yaml
 neurallm preregister `
-  --config configs/experiments/model-backed-confirmatory.preregistration.local.yaml `
-  --output configs/preregistration/model-backed-confirmatory.seal.json `
-  --sealed-config-output configs/experiments/model-backed-confirmatory.local.yaml
-neurallm run --config configs/experiments/model-backed-confirmatory.local.yaml --dry-run
+  --config configs/experiments/model-backed-confirmatory-answer-v2.preregistration.local.yaml `
+  --output configs/preregistration/model-backed-confirmatory-answer-v2.seal.json `
+  --sealed-config-output configs/experiments/model-backed-confirmatory-answer-v2.local.yaml
+neurallm run --config configs/experiments/model-backed-confirmatory-answer-v2.local.yaml --dry-run
 neurallm validate --config configs/experiments/phase3-baseline-evaluation.yaml
 neurallm plan --config configs/experiments/phase3-baseline-evaluation.yaml
 neurallm run --config configs/experiments/phase3-baseline-evaluation.yaml --dry-run
 neurallm run --config configs/experiments/phase3-synthetic-evaluator.yaml --execute
 neurallm run --config configs/experiments/phase4-neural-causal-smoke.yaml --dry-run
 neurallm run --config configs/experiments/model-backed-engineering-smoke.yaml --execute
-neurallm run --config configs/experiments/model-backed-live-smoke.local.yaml --execute --allow-live-provider
-neurallm run --config configs/experiments/model-backed-confirmatory.local.yaml --execute --allow-live-provider
+neurallm run --config configs/experiments/model-backed-live-smoke-answer-v2.local.yaml --execute --allow-live-provider
+neurallm run --config configs/experiments/model-backed-confirmatory-answer-v2.local.yaml --execute --allow-live-provider
 neurallm analyze --run-dir runs/phase3-synthetic-evaluator-validation
 neurallm report --run-dir runs/phase3-synthetic-evaluator-validation
 ```
@@ -251,11 +266,14 @@ compatibility and integrity checks pass. Supplying the grid with only one or
 two pilots validates it but does not advance readiness. Status does not publish
 the selection artifact, freeze calibration, or preregister the confirmatory run.
 
-`preflight` deliberately hashes the local model artifact and performs only
-llama.cpp identity inspection through `/health` and `/props`; it never requests
-a completion. `preregister` publishes the canonical seal and, when
-`--sealed-config-output` is supplied, writes a separate executable YAML with
-that exact seal embedded. The draft and executable local YAML files are ignored;
+`preflight` deliberately hashes the local model artifact and inspects llama.cpp
+identity through `/health` and `/props`. The v2 no-thinking provider additionally
+makes one zero-inference `/apply-template` compatibility probe; preflight never
+requests a completion. Offline validation of declared expectations is not a
+substitute for this observed live preflight. `preregister` publishes the
+canonical seal and, when `--sealed-config-output` is supplied, writes a separate
+executable YAML with that exact seal embedded. The draft and executable local
+YAML files are ignored;
 the seal and the externally referenced development-pilot selection evidence are
 publication artifacts and must be reviewed and committed before confirmatory
 execution. `preregister`, `validate`, `plan`, and `run --dry-run` validate or

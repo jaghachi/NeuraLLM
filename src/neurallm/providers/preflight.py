@@ -46,7 +46,7 @@ def preflight_llama_cpp(
     *,
     transport: httpx.BaseTransport | None = None,
 ) -> LlamaCppPreflightResult:
-    """Inspect ``/health`` and ``/props`` exactly once, never ``/completion``."""
+    """Inspect identity, plus one v2 rendering probe, never ``/completion``."""
 
     if not isinstance(config, LlamaCppProviderConfig):
         raise TypeError("config must be a LlamaCppProviderConfig")

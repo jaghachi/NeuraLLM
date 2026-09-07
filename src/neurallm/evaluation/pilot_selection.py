@@ -25,6 +25,7 @@ from neurallm.evaluation.selection import (
     StaticSelectionRecord,
     select_best_static,
 )
+from neurallm.metrics import MetricContext, compute_response_metrics
 from neurallm.providers.llama_cpp import require_llama_cpp_provider_binding
 from neurallm.providers.llama_cpp_evidence import (
     reconstruct_llama_cpp_generation_binding,
@@ -219,6 +220,20 @@ class DevelopmentPilotCandidateEvidence(_StrictFrozenModel):
             ):
                 raise ValueError(
                     "pilot candidate wire evidence does not bind its domain request/response"
+                )
+            reconstructed_metrics = compute_response_metrics(
+                MetricContext(
+                    prompt_case_id=turn.turn_input.prompt_case_id,
+                    prompt_family=turn.turn_input.prompt_family,
+                    prompt=request.prompt,
+                    response_text=response.text,
+                    validator=turn.turn_input.validator,
+                ),
+                metric_versions=manifest.metric_versions,
+            )
+            if turn.task_score != reconstructed_metrics.task_score:
+                raise ValueError(
+                    "pilot candidate task score does not reconstruct from declared metric versions"
                 )
         expected_keys, expected_scores = aggregate_pilot_unit_scores(self.turns)
         if self.development_unit_keys != expected_keys or self.unit_scores != expected_scores:

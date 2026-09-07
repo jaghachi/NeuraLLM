@@ -271,7 +271,8 @@ def evaluation_records_from_store(
                 prompt=planned.prompt,
                 response_text=turn.response.text,
                 validator=evidence.validator,
-            )
+            ),
+            metric_versions=plan.metric_versions,
         )
         if metrics != reconstructed_metrics:
             raise StoreInvariantError("stored evaluation metrics do not reconstruct exactly")

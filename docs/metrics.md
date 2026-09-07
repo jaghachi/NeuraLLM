@@ -1,5 +1,29 @@
 # Metric and evaluator definitions
 
+## Explicit final-answer version set
+
+Legacy `METRIC_VERSIONS` is unchanged. New model-backed templates select the
+complete `FINAL_ANSWER_METRIC_VERSIONS` map: validators use
+`validator-final-answer-v2`; token/repetition/diversity versions receive the
+`final-answer-v2-` prefix. Semantic similarity remains explicitly unavailable.
+Mixed or unknown version maps fail planning. Computation, replay, scientific
+reconstruction, and pilot selection use the declared manifest/plan map.
+
+V2 reserves reasoning delimiters as framing. Plain text is unchanged. Exactly
+one leading `<think>...</think>` block may precede an answer; only the trailing
+answer is scored. Leading framing whitespace is removed, but answer trailing
+whitespace remains significant for exact match. Unclosed, nested, additional,
+misplaced, or noncanonical reasoning delimiters mean no answer, producing zero
+task/adherence/format scores and zero answer length. No content is synthesized.
+All available repetition/diversity metrics use the same answer channel.
+
+The full raw response remains stored and included in every metric input hash.
+This grammar is not a semantic reasoning detector: an unmarked explanation is
+still plain text, and lexical validators remain lexical. The verified
+no-thinking prompt contract is a separate provider obligation. Completed
+token-limit responses remain accounted outcomes; they are not silently retried.
+Old scores and evidence are never rewritten under v2 semantics.
+
 ## Claim boundary
 
 The current implementation computes deterministic response-level metrics and

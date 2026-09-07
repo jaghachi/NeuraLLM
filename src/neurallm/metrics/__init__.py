@@ -1,7 +1,12 @@
 """Deterministic output metrics and validators."""
 
 from neurallm.metrics.base import MetricContext, MetricOutput, MetricPlugin, MetricRegistry
-from neurallm.metrics.deterministic import METRIC_VERSIONS, compute_response_metrics
+from neurallm.metrics.deterministic import (
+    FINAL_ANSWER_METRIC_VERSIONS,
+    METRIC_VERSIONS,
+    compute_response_metrics,
+    validate_metric_versions,
+)
 from neurallm.metrics.repetition import (
     TOKENIZATION_VERSION,
     distinct_ngram_ratio,
@@ -13,6 +18,7 @@ from neurallm.metrics.repetition import (
 from neurallm.metrics.validators import ValidationResult, ValidatorSpec, validate_response
 
 __all__ = [
+    "FINAL_ANSWER_METRIC_VERSIONS",
     "METRIC_VERSIONS",
     "TOKENIZATION_VERSION",
     "MetricContext",
@@ -27,5 +33,6 @@ __all__ = [
     "repeated_ngram_ratio",
     "repetition_ratio",
     "tokenize",
+    "validate_metric_versions",
     "validate_response",
 ]

@@ -1888,7 +1888,8 @@ class SQLiteRunStore:
                     prompt=turn.request.prompt,
                     response_text=response.text,
                     validator=evidence.validator,
-                )
+                ),
+                metric_versions=run_manifest.metric_versions,
             )
             if metrics != reconstructed_metrics:
                 fail("scientific response metrics do not reconstruct from committed inputs")
@@ -2418,7 +2419,8 @@ class SQLiteRunStore:
             raise StoreInvariantError("response metadata does not bind the canonical request")
         if (
             response.provider_identity.provider_type == "llama_cpp"
-            or response.raw_metadata.generation_method == "llama_cpp_completion_http_v1"
+            or response.raw_metadata.generation_method
+            in ("llama_cpp_completion_http_v1", "llama_cpp_chat_template_http_v2")
         ):
             try:
                 require_llama_cpp_generation_binding(request, response)

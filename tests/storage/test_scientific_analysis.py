@@ -63,7 +63,13 @@ from neurallm.experiments.scientific_analysis import (
     ConfirmatoryAnalysisContext,
     confirmatory_analysis_contract_sha256,
 )
-from neurallm.metrics import MetricContext, ValidatorSpec, compute_response_metrics
+from neurallm.metrics import (
+    FINAL_ANSWER_METRIC_VERSIONS,
+    METRIC_VERSIONS,
+    MetricContext,
+    ValidatorSpec,
+    compute_response_metrics,
+)
 from neurallm.providers.base import GenerationMetadata, GenerationResponse
 from neurallm.providers.fake import FakeProvider
 from neurallm.providers.llama_cpp import (
@@ -223,7 +229,7 @@ def _run_manifest(
             for policy_id in _SCIENTIFIC_POLICY_IDS
         },
         matched_history_policy_sources={"neural_matched_history_state_reset": "neural_persistent"},
-        metric_versions={"test-metrics": "1.0.0"},
+        metric_versions=METRIC_VERSIONS,
         seed_schedule=SeedSchedule(model_seeds=(7,), controller_seeds=(11,)),
         action_bounds=ActionBounds(),
         decision_rule_version=decision_rule_version,
@@ -638,6 +644,8 @@ def _complete_llama_requests(
     validator: ValidatorSpec | None = None,
     metric_validator: ValidatorSpec | None = None,
 ) -> tuple[str, ...]:
+    run_manifest = store.get_manifest()
+    assert run_manifest is not None
     condition_ids: list[str] = []
     features = prompt_features or PromptFeatures({})
     frozen_validator = validator or ValidatorSpec(kind="non_empty")
@@ -719,7 +727,8 @@ def _complete_llama_requests(
                         prompt=request.prompt,
                         response_text=response.text,
                         validator=frozen_metric_validator,
-                    )
+                    ),
+                    metric_versions=run_manifest.metric_versions,
                 ),
             )
             policy_trace = make_trace(request)
@@ -785,10 +794,16 @@ def _scientific_manifest(
     )
 
 
+@pytest.mark.parametrize("final_answer_metrics", (False, True))
 def test_scientific_analysis_is_atomic_typed_idempotent_and_reopenable(
     tmp_path: Path,
+    final_answer_metrics: bool,
 ) -> None:
     run_manifest = _run_manifest()
+    if final_answer_metrics:
+        run_manifest = run_manifest.model_copy(
+            update={"metric_versions": FINAL_ANSWER_METRIC_VERSIONS}
+        )
     database = tmp_path / "run.sqlite3"
 
     with SQLiteRunStore(database, run_manifest) as store:

@@ -1,5 +1,7 @@
-# LIVE DEVELOPMENT-PILOT CANDIDATE TEMPLATE: intentionally non-executable as
-# checked in. Copy once per declared static profile. Replace every PASTE value
+# LIVE DEVELOPMENT-PILOT CANDIDATE TEMPLATE: intentionally non-executable as checked in.
+# Use the audited llama_cpp.qwen35-no-thinking.example.yaml provider and v2
+# answer metrics below. Rebuild old local candidates; do not mix v1/v2 evidence.
+# Copy once per declared static profile to a NEW ignored file. Replace every PASTE value
 # with one exact llama.cpp preflight identity, give each copy a unique
 # experiment_id/artifact_root/profile ID, and change only the declared base
 # profile values with the exact values in the checked-in candidate grid. No
@@ -20,10 +22,10 @@ candidate_grid:
   expected_sha256: 39fcead158f98e9f359f6d1aef13660046024edc37bf70e95b26a1ed904ac49a
 provider:
   kind: llama_cpp
-  config_path: ../providers/llama_cpp.local.yaml
+  config_path: ../providers/llama_cpp.answer-v2.local.yaml
   expected_identity:
     provider_type: llama_cpp
-    implementation_version: llama-cpp-completion-http-v1
+    implementation_version: llama-cpp-chat-template-http-v2
     model_alias: PASTE_PREFLIGHT_MODEL_ALIAS
     build_id: PASTE_PREFLIGHT_BUILD_ID
     provider_config_hash: 0000000000000000000000000000000000000000000000000000000000000000
@@ -91,17 +93,17 @@ decoding_bounds:
   top_k: [0, 200]
   presence_penalty: [-2.0, 2.0]
 metric_versions:
-  distinct_2: distinct-2gram-unicode-nfkc-casefold-whitespace-v1
-  distinct_3: distinct-3gram-unicode-nfkc-casefold-whitespace-v1
-  format_validity: validator-v1
-  instruction_adherence: validator-v1
-  late_window_repetition_ratio: late-quarter-unicode-nfkc-casefold-whitespace-v1
-  repeated_3_gram_ratio: repeated-3gram-unicode-nfkc-casefold-whitespace-v1
-  repeated_4_gram_ratio: repeated-4gram-unicode-nfkc-casefold-whitespace-v1
-  repetition_ratio: token-repetition-unicode-nfkc-casefold-whitespace-v1
-  response_length_tokens: unicode-nfkc-casefold-whitespace-v1
+  distinct_2: final-answer-v2-distinct-2gram-unicode-nfkc-casefold-whitespace-v1
+  distinct_3: final-answer-v2-distinct-3gram-unicode-nfkc-casefold-whitespace-v1
+  format_validity: validator-final-answer-v2
+  instruction_adherence: validator-final-answer-v2
+  late_window_repetition_ratio: final-answer-v2-late-quarter-unicode-nfkc-casefold-whitespace-v1
+  repeated_3_gram_ratio: final-answer-v2-repeated-3gram-unicode-nfkc-casefold-whitespace-v1
+  repeated_4_gram_ratio: final-answer-v2-repeated-4gram-unicode-nfkc-casefold-whitespace-v1
+  repetition_ratio: final-answer-v2-token-repetition-unicode-nfkc-casefold-whitespace-v1
+  response_length_tokens: final-answer-v2-unicode-nfkc-casefold-whitespace-v1
   semantic_similarity: semantic-unavailable-v1
-  task_score: validator-v1
+  task_score: validator-final-answer-v2
 decision_rule_version: development-pilot-no-scientific-decision-v1
 database_schema_version: 2
 artifact_root: ../../runs/model-backed-development-pilot-PASTE_STATIC_PROFILE_ID

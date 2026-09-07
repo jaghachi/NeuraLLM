@@ -23,6 +23,15 @@ fake-provider run, or offline decision fixture proves that a live request was
 dispatched. Until an explicitly authorized live smoke succeeds, the state is
 `READY_FOR_LIVE_SMOKE`.
 
+Post-smoke correction: the first v1 live run completed 20/20 accounted requests,
+but its raw input and reasoning-contaminated keyword scores do not qualify the
+pilot's answer channel. New live example templates now declare the v2
+no-thinking provider and complete final-answer metric version set. The original
+run remains immutable engineering evidence. A fresh corrected smoke, then new
+development candidates and preregistration identities, are required before
+advancing; no old score or seal is retroactively migrated. See
+[the detailed audit](smoke-answer-contract.md).
+
 The experiment is valid even if the neural controller has no benefit. A run may
 support only one final decision state, and engineering completion does not
 depend on a positive result.
@@ -185,30 +194,48 @@ responses. All confirmatory identities are immutable once execution begins.
 
 ### Development-pilot static-selection handoff
 
-Run each declared static candidate as a separate, complete live development
-pilot. Start from the checked-in template, keep the provider reference exactly
-`../providers/llama_cpp.local.yaml`, and create exactly three local copies with
-distinct experiment IDs and artifact roots:
+After the corrected smoke gate passes, run each declared static candidate as a
+separate, complete live development pilot. Reuse the deliberately validated
+`llama_cpp.answer-v2.local.yaml` provider file created from
+`configs/providers/llama_cpp.qwen35-no-thinking.example.yaml`; never recopy over
+an existing provider configuration. Keep the provider reference exactly
+`../providers/llama_cpp.answer-v2.local.yaml`. Create three fresh local copies
+with distinct experiment IDs and artifact roots, preserving the earlier v1
+candidate files. The guards stop before any copy if a destination already exists:
 
 ```powershell
-Copy-Item configs/experiments/model-backed-development-pilot.example.yaml configs/experiments/model-backed-development-pilot-static-balanced.local.yaml
-Copy-Item configs/experiments/model-backed-development-pilot.example.yaml configs/experiments/model-backed-development-pilot-static-conservative.local.yaml
-Copy-Item configs/experiments/model-backed-development-pilot.example.yaml configs/experiments/model-backed-development-pilot-static-exploratory.local.yaml
+$pilotConfigTargets = @(
+    'configs/experiments/model-backed-development-pilot-static-balanced-answer-v2.local.yaml'
+    'configs/experiments/model-backed-development-pilot-static-conservative-answer-v2.local.yaml'
+    'configs/experiments/model-backed-development-pilot-static-exploratory-answer-v2.local.yaml'
+)
+foreach ($pilotConfigTarget in $pilotConfigTargets) {
+    if (Test-Path -LiteralPath $pilotConfigTarget) { throw "Refusing to overwrite $pilotConfigTarget" }
+}
+foreach ($pilotConfigTarget in $pilotConfigTargets) {
+    Copy-Item -LiteralPath configs/experiments/model-backed-development-pilot.example.yaml -Destination $pilotConfigTarget -ErrorAction Stop
+}
 
-neurallm validate --config configs/experiments/model-backed-development-pilot-static-balanced.local.yaml
-neurallm run --config configs/experiments/model-backed-development-pilot-static-balanced.local.yaml --dry-run
-neurallm run --config configs/experiments/model-backed-development-pilot-static-balanced.local.yaml --execute --allow-live-provider
+neurallm validate --config configs/experiments/model-backed-development-pilot-static-balanced-answer-v2.local.yaml
+neurallm run --config configs/experiments/model-backed-development-pilot-static-balanced-answer-v2.local.yaml --dry-run
+neurallm run --config configs/experiments/model-backed-development-pilot-static-balanced-answer-v2.local.yaml --execute --allow-live-provider
 
-neurallm validate --config configs/experiments/model-backed-development-pilot-static-conservative.local.yaml
-neurallm run --config configs/experiments/model-backed-development-pilot-static-conservative.local.yaml --dry-run
-neurallm run --config configs/experiments/model-backed-development-pilot-static-conservative.local.yaml --execute --allow-live-provider
+neurallm validate --config configs/experiments/model-backed-development-pilot-static-conservative-answer-v2.local.yaml
+neurallm run --config configs/experiments/model-backed-development-pilot-static-conservative-answer-v2.local.yaml --dry-run
+neurallm run --config configs/experiments/model-backed-development-pilot-static-conservative-answer-v2.local.yaml --execute --allow-live-provider
 
-neurallm validate --config configs/experiments/model-backed-development-pilot-static-exploratory.local.yaml
-neurallm run --config configs/experiments/model-backed-development-pilot-static-exploratory.local.yaml --dry-run
-neurallm run --config configs/experiments/model-backed-development-pilot-static-exploratory.local.yaml --execute --allow-live-provider
+neurallm validate --config configs/experiments/model-backed-development-pilot-static-exploratory-answer-v2.local.yaml
+neurallm run --config configs/experiments/model-backed-development-pilot-static-exploratory-answer-v2.local.yaml --dry-run
+neurallm run --config configs/experiments/model-backed-development-pilot-static-exploratory-answer-v2.local.yaml --execute --allow-live-provider
 ```
 
-Before validation, copy the profile values verbatim from
+Before validation, set each experiment ID and artifact root to its matching
+`model-backed-development-pilot-static-<candidate>-answer-v2` name and fresh
+`runs/` directory, where `<candidate>` is `balanced`, `conservative`, or
+`exploratory`. The immutable profile IDs remain `static-*-v1` as declared in the
+candidate grid. Copy the exact expected provider identity and effective
+configuration from fresh v2 preflight into every candidate; retain the complete
+final-answer-v2 metric map. Copy the profile values verbatim from
 `model-backed-development-pilot-candidate-grid.json`; do not choose or tune
 values at execution time:
 
@@ -232,9 +259,9 @@ provider-free public artifact from their canonical SQLite stores:
 
 ```powershell
 neurallm freeze-static-selection `
-  --candidate-run-dir runs/model-backed-development-pilot-static-balanced-v1 `
-  --candidate-run-dir runs/model-backed-development-pilot-static-conservative-v1 `
-  --candidate-run-dir runs/model-backed-development-pilot-static-exploratory-v1 `
+  --candidate-run-dir runs/model-backed-development-pilot-static-balanced-answer-v2 `
+  --candidate-run-dir runs/model-backed-development-pilot-static-conservative-answer-v2 `
+  --candidate-run-dir runs/model-backed-development-pilot-static-exploratory-answer-v2 `
   --candidate-grid configs/experiments/model-backed-development-pilot-candidate-grid.json `
   --output evidence/development/model-backed-static-selection.json
 ```
@@ -423,10 +450,13 @@ effect, or a scientific model result.
 
 ## Provider identity and execution
 
-The implemented Phase 2 llama.cpp path uses one strict completion provider with
+The historical raw-v1 llama.cpp path uses one strict completion provider with
 explicit URL, identity fields, prompt-template hash, and connect/read/write/pool
 timeouts. Construction inspects `/health` and `/props`; each generation repeats
-the inspection before one `/completion` dispatch. There is no Ollama
+the inspection before one `/completion` dispatch. The audited no-thinking v2
+path adds a zero-inference `/apply-template` compatibility probe at construction
+and exact template rendering for each actual prompt before its completion.
+Both versions retain their distinct identities and evidence. There is no Ollama
 compatibility, hidden environment-variable fallback, automatic model download,
 redirect following, provider fallback, or automatic retry after dispatch.
 
@@ -784,8 +814,10 @@ and no result is overstated beyond the gate that generated it.
 
 Live llama.cpp execution additionally requires a successful explicit preflight
 that hashes the client-local model artifact and makes no generation request,
-`neurallm preflight --provider-config <path>`, against `/health` and `/props`,
-followed by the double CLI gate: both `--execute` and
-`--allow-live-provider` on `neurallm run --config <path>`. Preflight alone or
-either execution flag alone authorizes no generation; no environment fallback
-may fill in these choices.
+`neurallm preflight --provider-config <path>`, against `/health` and `/props`.
+The v2 no-thinking provider also performs one zero-inference `/apply-template`
+compatibility probe. Offline validation of expected identity fields does not
+establish observed live preflight. Execution then requires the double CLI gate:
+both `--execute` and `--allow-live-provider` on `neurallm run --config <path>`.
+Preflight alone or either execution flag alone authorizes no generation; no
+environment fallback may fill in these choices.

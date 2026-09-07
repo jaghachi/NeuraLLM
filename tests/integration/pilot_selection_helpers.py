@@ -23,7 +23,6 @@ from neurallm.domain.models import (
     ProviderIdentity,
     RunManifest,
     SeedSchedule,
-    UnitIntervalMetricValue,
 )
 from neurallm.domain.serialization import canonical_json, canonical_sha256
 from neurallm.evaluation.models import DatasetPurpose
@@ -43,7 +42,8 @@ from neurallm.evaluation.pilot_selection_builders import (
 from neurallm.evaluation.selection import StaticProfile
 from neurallm.experiments.dataset import PromptCase, PromptDataset
 from neurallm.experiments.protocol import MODEL_BACKED_POLICY_IDS
-from neurallm.metrics.deterministic import METRIC_VERSIONS
+from neurallm.metrics.base import MetricContext
+from neurallm.metrics.deterministic import METRIC_VERSIONS, compute_response_metrics
 from neurallm.metrics.validators import ValidatorSpec
 from neurallm.providers.base import GenerationMetadata, GenerationRequest, GenerationResponse
 from neurallm.providers.llama_cpp import (
@@ -117,13 +117,28 @@ def _provider_identity() -> tuple[ProviderIdentity, str]:
     return identity, canonical_json(effective)
 
 
+def _fixture_response(validator: ValidatorSpec, *, task_passes: bool) -> str:
+    """Generate real deterministic evidence, never an independently invented score."""
+
+    if validator.kind == "non_empty":
+        return "fixture response"
+    if not task_passes:
+        return "__fixture_wrong__"
+    if validator.kind == "contains_all":
+        return " ".join(validator.required_terms)
+    if validator.kind == "exact_match":
+        assert validator.expected_text is not None
+        return validator.expected_text
+    return canonical_json(dict.fromkeys(validator.required_json_keys, True))
+
+
 def _candidate(
     *,
     dataset_version: str,
     dataset_sha256: str,
     sequence_ids: tuple[str, ...],
     profile: StaticProfile,
-    task_score: float,
+    task_passes: bool,
     provider_identity: ProviderIdentity,
     provider_effective_configuration_json: str,
     policy_config_hashes: Mapping[str, str],
@@ -134,6 +149,7 @@ def _candidate(
     database_schema_version: int,
     prompt_cases: Mapping[tuple[str, int], PromptCase],
     candidate_grid_sha256: str,
+    request_prompt_override: str | None,
 ) -> DevelopmentPilotCandidateEvidence:
     manifest = RunManifest(
         source_commit="1" * 40,
@@ -191,11 +207,37 @@ def _candidate(
                     if prompt_case is None
                     else prompt_case.prompt
                 )
+                if request_prompt_override is not None:
+                    prompt = request_prompt_override
                 request = GenerationRequest(
                     prompt=prompt,
                     decoding_parameters=parameters,
                     condition=condition,
                 )
+                turn_input = TurnInputEvidence(
+                    condition_id=condition.condition_id,
+                    prompt_case_id=(
+                        f"{sequence_id}-turn-{turn_index}"
+                        if prompt_case is None
+                        else prompt_case.case_id
+                    ),
+                    prompt_family=(
+                        "pilot_selection_fixture"
+                        if prompt_case is None
+                        else prompt_case.prompt_family
+                    ),
+                    prompt_features=(
+                        PromptFeatures({"constraint_count": 1.0})
+                        if prompt_case is None
+                        else prompt_case.prompt_features
+                    ),
+                    validator=(
+                        ValidatorSpec(kind="contains_all", required_terms=("alpha", "beta"))
+                        if prompt_case is None
+                        else prompt_case.validator
+                    ),
+                )
+                response_text = _fixture_response(turn_input.validator, task_passes=task_passes)
                 request_sha256 = canonical_sha256(request)
                 provider_request = {
                     "prompt": prompt,
@@ -210,7 +252,7 @@ def _candidate(
                     "cache_prompt": False,
                 }
                 provider_response = {
-                    "content": "fixture response",
+                    "content": response_text,
                     "stop": True,
                     "model": provider_identity.model_alias,
                     "generation_settings": {
@@ -232,7 +274,7 @@ def _candidate(
                     provider_response_sha256=canonical_sha256(provider_response),
                 )
                 response = GenerationResponse(
-                    text="fixture response",
+                    text=response_text,
                     provider_identity=provider_identity,
                     effective_parameters=parameters,
                     raw_metadata=metadata,
@@ -244,37 +286,17 @@ def _candidate(
                         response_sha256=canonical_sha256(response),
                         generation_metadata=metadata,
                         decoding_parameters=parameters,
-                        turn_input=TurnInputEvidence(
-                            condition_id=condition.condition_id,
-                            prompt_case_id=(
-                                f"{sequence_id}-turn-{turn_index}"
-                                if prompt_case is None
-                                else prompt_case.case_id
+                        turn_input=turn_input,
+                        task_score=compute_response_metrics(
+                            MetricContext(
+                                prompt_case_id=turn_input.prompt_case_id,
+                                prompt_family=turn_input.prompt_family,
+                                prompt=prompt,
+                                response_text=response_text,
+                                validator=turn_input.validator,
                             ),
-                            prompt_family=(
-                                "pilot_selection_fixture"
-                                if prompt_case is None
-                                else prompt_case.prompt_family
-                            ),
-                            prompt_features=(
-                                PromptFeatures({"constraint_count": 1.0})
-                                if prompt_case is None
-                                else prompt_case.prompt_features
-                            ),
-                            validator=(
-                                ValidatorSpec(kind="non_empty")
-                                if prompt_case is None
-                                else prompt_case.validator
-                            ),
-                        ),
-                        task_score=UnitIntervalMetricValue(
-                            value=task_score,
-                            availability=True,
-                            metric_version="validator-v1",
-                            input_hash=canonical_sha256(
-                                {"condition_id": condition.condition_id, "kind": "task-score"}
-                            ),
-                        ),
+                            metric_versions=metric_versions,
+                        ).task_score,
                     )
                 )
 
@@ -327,6 +349,7 @@ def build_test_static_selection_evidence(
     decoding_bounds: DecodingBounds | None = None,
     metric_versions: Mapping[str, str] | None = None,
     database_schema_version: int = CURRENT_SCHEMA_VERSION,
+    request_prompt_override: str | None = None,
 ) -> DevelopmentPilotStaticSelectionEvidence:
     """Build valid multi-run evidence for an explicitly supplied winning profile."""
 
@@ -386,7 +409,7 @@ def build_test_static_selection_evidence(
                 dataset_sha256=dataset_sha256,
                 sequence_ids=sequence_ids,
                 profile=profile,
-                task_score=0.8 if profile == winning_profile else 0.6,
+                task_passes=profile == winning_profile,
                 provider_identity=provider_identity,
                 provider_effective_configuration_json=(provider_effective_configuration_json),
                 policy_config_hashes=policy_config_hashes,
@@ -397,6 +420,7 @@ def build_test_static_selection_evidence(
                 database_schema_version=database_schema_version,
                 prompt_cases=prompt_cases,
                 candidate_grid_sha256=candidate_grid.candidate_grid_sha256,
+                request_prompt_override=request_prompt_override,
             )
             for profile in MODEL_BACKED_STATIC_CANDIDATE_PROFILES
         ),

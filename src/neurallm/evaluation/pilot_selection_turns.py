@@ -46,7 +46,8 @@ class DevelopmentPilotTurnEvidence(BaseModel):
         if self.decoding_parameters.seed != self.condition.model_seed:
             raise ValueError("pilot best_static request seed differs from its model seed")
         if (
-            self.generation_metadata.generation_method != "llama_cpp_completion_http_v1"
+            self.generation_metadata.generation_method
+            not in ("llama_cpp_completion_http_v1", "llama_cpp_chat_template_http_v2")
             or self.generation_metadata.request_sha256 != self.request_sha256
         ):
             raise ValueError(

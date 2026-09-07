@@ -101,6 +101,7 @@ def _static_selection_evidence(
         development_dataset=development,
         provider_identity=ProviderIdentity.model_validate(identity_payload),
         provider_effective_configuration_json=effective_configuration_json,
+        metric_versions=load_yaml_mapping(TEMPLATE)["metric_versions"],
         winning_profile=StaticProfile(
             profile_id="static-balanced-v1",
             temperature=0.7,
@@ -135,7 +136,9 @@ def test_confirmatory_template_seals_exact_provider_free_2400_turn_plan(
     assert "preregistration" not in source_payload
     assert source_payload["provider"]["kind"] == "llama_cpp"
     assert "PASTE_PREFLIGHT" in source_payload["provider"]["expected_identity"]["model_alias"]
-    assert source_payload["provider"]["config_path"] == "../providers/llama_cpp.local.yaml"
+    assert (
+        source_payload["provider"]["config_path"] == "../providers/llama_cpp.answer-v2.local.yaml"
+    )
     with pytest.raises(ValidationError):
         ExperimentConfig.model_validate(source_payload)
 
