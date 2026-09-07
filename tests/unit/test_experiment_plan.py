@@ -8,7 +8,7 @@ from neurallm.domain.models import ActionBounds, DecodingBounds
 from neurallm.experiments.config import ExperimentConfig, LoadedExperimentConfig
 from neurallm.experiments.dataset import LoadedDataset, PromptDataset
 from neurallm.experiments.plan import build_plan
-from neurallm.metrics import METRIC_VERSIONS
+from neurallm.metrics import FINAL_ANSWER_METRIC_VERSIONS, METRIC_VERSIONS
 from neurallm.providers.fake import (
     FakeProvider,
     fake_provider_effective_configuration_json,
@@ -153,6 +153,24 @@ def test_plan_rejects_metric_version_drift() -> None:
 
     with pytest.raises(ValueError, match="metric versions"):
         build_plan(loaded_config, loaded_dataset)
+
+
+def test_plan_explicitly_selects_final_answer_metrics_and_changes_scientific_identity() -> None:
+    loaded_config, loaded_dataset = loaded_inputs()
+    legacy = build_plan(loaded_config, loaded_dataset)
+    selected = LoadedExperimentConfig(
+        config=loaded_config.config.model_copy(
+            update={"metric_versions": FINAL_ANSWER_METRIC_VERSIONS}
+        ),
+        source_path=loaded_config.source_path,
+        dataset_path=loaded_config.dataset_path,
+        provider_config_path=None,
+        artifact_root=loaded_config.artifact_root,
+    )
+    current = build_plan(selected, loaded_dataset)
+    assert dict(current.metric_versions) == FINAL_ANSWER_METRIC_VERSIONS
+    assert current.scientific_identity_sha256 != legacy.scientific_identity_sha256
+    assert current.experiment_config_hash != legacy.experiment_config_hash
 
 
 @pytest.mark.parametrize(

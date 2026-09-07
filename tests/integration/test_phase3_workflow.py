@@ -30,7 +30,7 @@ from neurallm.experiments.analysis import evaluation_records_from_store
 from neurallm.experiments.dataset import DatasetSeal, PromptDataset
 from neurallm.experiments.runner import GitProvenance
 from neurallm.experiments.workflow import execute_prepared, prepare_experiment
-from neurallm.metrics import METRIC_VERSIONS
+from neurallm.metrics import FINAL_ANSWER_METRIC_VERSIONS, METRIC_VERSIONS
 from neurallm.providers.fake import (
     fake_provider_effective_configuration_json,
     fake_provider_identity,
@@ -75,7 +75,9 @@ def _dataset(
     )
 
 
-def _write_phase3_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _write_phase3_inputs(
+    tmp_path: Path, *, final_answer_metrics: bool = False
+) -> tuple[Path, Path, Path]:
     development = _dataset(
         DatasetPurpose.DEVELOPMENT,
         dataset_id="phase3-development",
@@ -166,7 +168,9 @@ def _write_phase3_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         },
         "action_bounds": ActionBounds().model_dump(mode="json"),
         "decoding_bounds": DecodingBounds().model_dump(mode="json"),
-        "metric_versions": METRIC_VERSIONS,
+        "metric_versions": FINAL_ANSWER_METRIC_VERSIONS
+        if final_answer_metrics
+        else METRIC_VERSIONS,
         "decision_rule_version": "phase3-baseline-evaluator-v1",
         "database_schema_version": 2,
         "artifact_root": "run",
@@ -256,10 +260,12 @@ def test_phase3_prepare_rejects_dataset_identity_drift(
         prepare_experiment(config_path, provenance=_PROVENANCE)
 
 
+@pytest.mark.parametrize("final_answer_metrics", (False, True))
 def test_phase3_fake_execution_uses_generic_runtime_state_and_replays(
     tmp_path: Path,
+    final_answer_metrics: bool,
 ) -> None:
-    config_path, _, _ = _write_phase3_inputs(tmp_path)
+    config_path, _, _ = _write_phase3_inputs(tmp_path, final_answer_metrics=final_answer_metrics)
     prepared = prepare_experiment(config_path, provenance=_PROVENANCE)
 
     first = execute_prepared(prepared)

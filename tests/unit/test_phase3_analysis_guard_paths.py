@@ -51,6 +51,7 @@ from neurallm.experiments.plan import (
     PlannedTurn,
 )
 from neurallm.experiments.runner import DetailedAppliedPolicyTrace
+from neurallm.metrics import METRIC_VERSIONS, MetricContext, compute_response_metrics
 from neurallm.metrics.validators import ValidatorSpec
 from neurallm.providers.fake import (
     FakeProvider,
@@ -498,13 +499,29 @@ def test_evaluation_record_rejects_unreconstructable_metric_unavailability(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    plan = _phase3_plan()
+    plan = _phase3_plan().model_copy(update={"metric_versions": METRIC_VERSIONS})
     turn, evidence = _stored_turn(plan)
+    assert turn.response is not None
+    # Keep the declared version and all other metrics valid so this regression
+    # isolates an invented unavailable score, not an unsupported-version guard.
+    turn = replace(
+        turn,
+        metrics=compute_response_metrics(
+            MetricContext(
+                prompt_case_id=evidence.prompt_case_id,
+                prompt_family=evidence.prompt_family,
+                prompt=turn.request.prompt,
+                response_text=turn.response.text,
+                validator=evidence.validator,
+            ),
+            metric_versions=plan.metric_versions,
+        ),
+    )
     assert turn.metrics is not None
     unavailable = UnitIntervalMetricValue(
         value=None,
         availability=False,
-        metric_version="test-v1",
+        metric_version=turn.metrics.task_score.metric_version,
         input_hash=turn.metrics.task_score.input_hash,
     )
     turn = replace(

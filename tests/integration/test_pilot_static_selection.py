@@ -62,7 +62,11 @@ from neurallm.experiments.static_selection import (
     validate_static_selection_evidence_against_dataset,
 )
 from neurallm.metrics.base import MetricContext
-from neurallm.metrics.deterministic import METRIC_VERSIONS, compute_response_metrics
+from neurallm.metrics.deterministic import (
+    FINAL_ANSWER_METRIC_VERSIONS,
+    METRIC_VERSIONS,
+    compute_response_metrics,
+)
 from neurallm.metrics.validators import ValidatorSpec
 from neurallm.providers.base import GenerationMetadata, GenerationRequest, GenerationResponse
 from neurallm.providers.llama_cpp import (
@@ -70,6 +74,7 @@ from neurallm.providers.llama_cpp import (
     LlamaCppProviderConfig,
     llama_cpp_provider_identity,
 )
+from neurallm.providers.llama_cpp_evidence import reconstruct_llama_cpp_generation_binding
 from neurallm.storage import (
     CURRENT_SCHEMA_VERSION,
     DurableExecutionAccounting,
@@ -182,6 +187,7 @@ def _manifest(
     profile: StaticProfile,
     provider_identity: ProviderIdentity,
     provider_effective_configuration_json: str,
+    final_answer_metrics: bool = False,
 ) -> RunManifest:
     return RunManifest(
         source_commit="1" * 40,
@@ -195,7 +201,7 @@ def _manifest(
         provider_effective_configuration_json=provider_effective_configuration_json,
         policy_config_hashes={spec.policy_id: canonical_sha256(spec) for spec in _POLICY_SPECS},
         matched_history_policy_sources={"neural_matched_history_state_reset": "neural_persistent"},
-        metric_versions=METRIC_VERSIONS,
+        metric_versions=FINAL_ANSWER_METRIC_VERSIONS if final_answer_metrics else METRIC_VERSIONS,
         seed_schedule=SeedSchedule(
             model_seeds=_MODEL_SEEDS,
             controller_seeds=(_CONTROLLER_SEED,),
@@ -251,6 +257,7 @@ def _write_pilot_store(
     provider_identity: ProviderIdentity,
     provider_effective_configuration_json: str,
     tamper_static_trace: bool = False,
+    final_answer_metrics: bool = False,
 ) -> Path:
     run_directory = root / profile.profile_id
     run_directory.mkdir(parents=True)
@@ -258,6 +265,7 @@ def _write_pilot_store(
         profile=profile,
         provider_identity=provider_identity,
         provider_effective_configuration_json=provider_effective_configuration_json,
+        final_answer_metrics=final_answer_metrics,
     )
     previous_condition_ids: dict[tuple[str, int, str], str] = {}
     condition_ids: list[str] = []
@@ -311,6 +319,8 @@ def _write_pilot_store(
                         store.prepare_turn(request, history, input_evidence)
                         store.begin_dispatch(condition.condition_id)
                         response_text = "PASS" if task_passes else "FAIL"
+                        if final_answer_metrics:
+                            response_text = f"<think>unscored reasoning</think>\n{response_text}"
                         provider_request = {
                             "prompt": request.prompt,
                             "model": provider_identity.model_alias,
@@ -360,7 +370,8 @@ def _write_pilot_store(
                                     prompt=request.prompt,
                                     response_text=response.text,
                                     validator=validator,
-                                )
+                                ),
+                                metric_versions=manifest.metric_versions,
                             ),
                         )
                         trace_tampered = (
@@ -481,6 +492,106 @@ def _replace_first_turn(
     candidate = evidence.candidates[0]
     updated = candidate.model_copy(update={"turns": (replacement, *candidate.turns[1:])})
     return _replace_candidate(evidence, 0, updated)
+
+
+def test_pilot_candidate_reconstructs_explicit_final_answer_metric_versions(tmp_path: Path) -> None:
+    identity, effective = _provider_binding(tmp_path)
+    run_directory = _write_pilot_store(
+        tmp_path,
+        profile=MODEL_BACKED_STATIC_CANDIDATE_PROFILES[0],
+        task_passes=True,
+        provider_identity=identity,
+        provider_effective_configuration_json=effective,
+        final_answer_metrics=True,
+    )
+    candidate = _candidate_from_run_directory(run_directory)
+    assert len(candidate.turns) == 48
+    assert all(turn.task_score.value == 1.0 for turn in candidate.turns)
+    assert all(
+        turn.task_score.metric_version == FINAL_ANSWER_METRIC_VERSIONS["task_score"]
+        for turn in candidate.turns
+    )
+
+
+@pytest.mark.parametrize("forgery", ("legacy_version", "forged_v2_value"))
+def test_pilot_artifact_rejects_raw_reasoning_scores_with_rehashed_envelopes(forgery: str) -> None:
+    dataset = _PILOT_DATASET.model_copy(
+        update={
+            "sequences": tuple(
+                sequence.model_copy(
+                    update={
+                        "cases": tuple(
+                            case.model_copy(
+                                update={
+                                    "validator": ValidatorSpec(
+                                        kind="contains_all", required_terms=("PASS",)
+                                    )
+                                }
+                            )
+                            for case in sequence.cases
+                        )
+                    }
+                )
+                for sequence in _PILOT_DATASET.sequences
+            )
+        }
+    )
+    evidence = build_test_static_selection_evidence(
+        development_dataset=dataset,
+        winning_profile=MODEL_BACKED_STATIC_CANDIDATE_PROFILES[0],
+        metric_versions=FINAL_ANSWER_METRIC_VERSIONS,
+    )
+    candidate = evidence.candidates[0]
+    original = candidate.turns[0]
+    metadata = original.generation_metadata
+    assert metadata.provider_response_json is not None
+    wire_response = json.loads(metadata.provider_response_json)
+    wire_response["content"] = "<think>PASS</think>FAIL"
+    metadata = metadata.model_copy(
+        update={
+            "provider_response_json": canonical_json(wire_response),
+            "provider_response_sha256": canonical_sha256(wire_response),
+        }
+    )
+    request, response = reconstruct_llama_cpp_generation_binding(
+        condition=original.condition,
+        decoding_parameters=original.decoding_parameters,
+        provider_identity=candidate.source_run_manifest.provider_identity,
+        metadata=metadata,
+    )
+    context = MetricContext(
+        prompt_case_id=original.turn_input.prompt_case_id,
+        prompt_family=original.turn_input.prompt_family,
+        prompt=request.prompt,
+        response_text=response.text,
+        validator=original.turn_input.validator,
+    )
+    raw_score = compute_response_metrics(context, metric_versions=METRIC_VERSIONS).task_score
+    final_score = compute_response_metrics(
+        context, metric_versions=FINAL_ANSWER_METRIC_VERSIONS
+    ).task_score
+    assert raw_score.value == 1.0 and final_score.value == 0.0
+    forged_score = (
+        raw_score
+        if forgery == "legacy_version"
+        else final_score.model_copy(update={"value": raw_score.value})
+    )
+    forged_turn = original.model_copy(
+        update={
+            "generation_metadata": metadata,
+            "response_sha256": canonical_sha256(response),
+            "task_score": forged_score,
+        }
+    )
+    # The constructor recomputes unit scores, analysis hash and all containing
+    # hashes. A self-consistent envelope still cannot invent its task score.
+    with pytest.raises(ValueError, match="task score does not reconstruct"):
+        build_development_pilot_candidate_evidence(
+            source_run_manifest=candidate.source_run_manifest,
+            source_run_finalization=candidate.source_run_finalization,
+            profile=candidate.profile,
+            turns=(forged_turn, *candidate.turns[1:]),
+        )
 
 
 def test_freeze_static_selection_from_complete_declared_pilot_grid(
@@ -978,6 +1089,26 @@ def test_static_selection_rejects_cross_candidate_prompt_input_drift(
             "turn_input": first_turn.turn_input.model_copy(
                 update={"prompt_family": "foreign_prompt_family"}
             )
+        }
+    )
+    request, response = reconstruct_llama_cpp_generation_binding(
+        condition=first_turn.condition,
+        decoding_parameters=first_turn.decoding_parameters,
+        provider_identity=drifted_source.source_run_manifest.provider_identity,
+        metadata=first_turn.generation_metadata,
+    )
+    drifted_turn = drifted_turn.model_copy(
+        update={
+            "task_score": compute_response_metrics(
+                MetricContext(
+                    prompt_case_id=drifted_turn.turn_input.prompt_case_id,
+                    prompt_family=drifted_turn.turn_input.prompt_family,
+                    prompt=request.prompt,
+                    response_text=response.text,
+                    validator=drifted_turn.turn_input.validator,
+                ),
+                metric_versions=drifted_source.source_run_manifest.metric_versions,
+            ).task_score
         }
     )
     drifted_candidate = build_development_pilot_candidate_evidence(

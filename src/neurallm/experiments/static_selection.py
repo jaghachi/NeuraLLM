@@ -161,7 +161,8 @@ def _candidate_from_run_directory(run_directory: Path) -> DevelopmentPilotCandid
                     prompt=turn.request.prompt,
                     response_text=turn.response.text,
                     validator=input_evidence.validator,
-                )
+                ),
+                metric_versions=manifest.metric_versions,
             )
             if reconstructed != turn.metrics:
                 raise StoreInvariantError("best_static metrics do not reconstruct exactly")

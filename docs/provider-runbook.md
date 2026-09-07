@@ -2,10 +2,16 @@
 
 ## Status and claim boundary
 
-NeuraLLM Phase 2 implements a strict synchronous adapter for the llama.cpp HTTP
-completion server. Fake-transport contract tests cover its success and failure
-paths. No live llama.cpp run has been validated for this release; mocks and the
-deterministic fake provider cannot establish live validity.
+NeuraLLM implements a strict synchronous adapter for the llama.cpp HTTP
+completion server. The original v1 live smoke recorded 20/20 generations with
+zero uncertain dispatches, establishing execution/accounting only. Its answer
+channel was unsuitable for pilot selection: all responses exhausted the fixed
+128-token cap and keyword validators credited unfinished reasoning.
+
+The template-aware v2 protocol and final-answer metrics address those contract
+gaps offline. They have not yet been validated by a new live run. See
+[the smoke audit and correction boundary](smoke-answer-contract.md). Mocks and
+the deterministic fake provider cannot establish live validity.
 
 The adapter targets one explicit server contract. It is not a compatibility
 layer for every llama.cpp version, Ollama, OpenAI-compatible routes, or another
@@ -23,6 +29,13 @@ lowercase SHA-256 to equal `model_sha256`. It then performs these requests:
    - `default_generation_settings.params` with finite-float `temperature`,
      finite-float `top_p`, integer `top_k`, finite-float `presence_penalty`,
      integer `n_predict`, and integer `seed`.
+
+For `prompt_format: chat_template_no_thinking_v1`, construction additionally
+performs one fixed `POST /apply-template` compatibility probe, with zero
+inference. A render mismatch fails preflight before any logical generation.
+Each generation subsequently applies and verifies its actual prompt before
+the single completion dispatch. Legacy `raw_completion_v1` is the omitted
+default so old configurations and hashes retain their exact representation.
 
 Before every generation, the adapter compares the local artifact's device,
 file identity, size, and modification time plus a bounded SHA-256 content probe
@@ -62,9 +75,19 @@ to preserve HTTP framing or byte-for-byte wire data.
 
 ## Explicit provider configuration
 
-Copy `configs/providers/llama_cpp.example.yaml` to a machine-local path and
-replace every placeholder. Do not put credentials in `base_url` or commit local
-machine identity accidentally.
+For new model-backed experiments, start with
+`configs/providers/llama_cpp.qwen35-no-thinking.example.yaml`. This mode supports
+only the audited Qwen3.5 template hash and one text-only user message; it is not
+a general chat-template interpreter. Use an explicitly Jinja-enabled server.
+Per-request `enable_thinking: false` and exact deterministic render comparison
+prevent an ignored renderer option from silently changing the input channel.
+
+Use a new ignored provider filename and new experiment/run IDs if local files
+already belong to a run. Update each experiment's `config_path` to that filename,
+then fill its expected identity and effective configuration from fresh preflight.
+Never overwrite the old smoke or reuse its v1 identity for v2. The older generic
+`llama_cpp.example.yaml` remains available for historical raw-protocol use.
+Do not put credentials in `base_url` or commit local machine identity accidentally.
 
 | Field | Requirement |
 | --- | --- |

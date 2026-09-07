@@ -421,9 +421,8 @@ def test_publication_binds_pilot_request_hashes_to_the_development_prompts(
     assert config.policy_specs is not None
     development = _dataset(DatasetPurpose.DEVELOPMENT)
     unbound_evidence = build_test_static_selection_evidence(
-        dataset_version=development.version,
-        dataset_sha256=development.dataset_hash,
-        sequence_ids=tuple(sequence.sequence_id for sequence in development.sequences),
+        development_dataset=development,
+        request_prompt_override="Foreign prompt despite otherwise matching development inputs.",
         provider_identity=config.provider.expected_identity,
         provider_effective_configuration_json=(
             config.provider.expected_effective_configuration_json

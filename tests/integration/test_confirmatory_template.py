@@ -101,6 +101,7 @@ def _static_selection_evidence(
         development_dataset=development,
         provider_identity=ProviderIdentity.model_validate(identity_payload),
         provider_effective_configuration_json=effective_configuration_json,
+        metric_versions=load_yaml_mapping(TEMPLATE)["metric_versions"],
         winning_profile=StaticProfile(
             profile_id="static-balanced-v1",
             temperature=0.7,

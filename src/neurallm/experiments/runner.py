@@ -733,7 +733,8 @@ def execute_plan(
                         prompt=turn.prompt,
                         response_text=stored.response.text,
                         validator=turn.validator,
-                    )
+                    ),
+                    metric_versions=plan.metric_versions,
                 )
                 stored = store.persist_metrics(condition_id, metrics)
                 if checkpoint_hook is not None:
@@ -759,7 +760,8 @@ def execute_plan(
                         prompt=turn.prompt,
                         response_text=stored.response.text,
                         validator=turn.validator,
-                    )
+                    ),
+                    metric_versions=plan.metric_versions,
                 )
                 if stored.metrics != expected_metrics:
                     raise StoreInvariantError("committed metrics do not reconstruct exactly")

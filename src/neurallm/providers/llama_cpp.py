@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from hashlib import sha256
 from math import isclose, isfinite
 from pathlib import Path
-from typing import Final, Self, cast
+from typing import Final, Literal, Self, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -32,8 +32,10 @@ from neurallm.providers.base import (
     GenerationResponse,
     ProviderIdentityMismatchError,
 )
+from neurallm.providers.prompt_rendering import render_no_thinking_prompt
 
 LLAMA_CPP_IMPLEMENTATION_VERSION: Final = "llama-cpp-completion-http-v1"
+LLAMA_CPP_CHAT_TEMPLATE_IMPLEMENTATION_VERSION: Final = "llama-cpp-chat-template-http-v2"
 _REQUIRED_EFFECTIVE_SETTINGS: Final = (
     "temperature",
     "top_p",
@@ -88,6 +90,11 @@ class LlamaCppProviderConfig(_StrictFrozenModel):
     read_timeout_seconds: float = Field(gt=0.0, allow_inf_nan=False)
     write_timeout_seconds: float = Field(gt=0.0, allow_inf_nan=False)
     pool_timeout_seconds: float = Field(gt=0.0, allow_inf_nan=False)
+    # Omit the legacy default from serialization to preserve frozen v1 identities.
+    prompt_format: Literal["raw_completion_v1", "chat_template_no_thinking_v1"] = Field(
+        default="raw_completion_v1",
+        exclude_if=lambda value: value == "raw_completion_v1",
+    )
 
     @field_validator("base_url")
     @classmethod
@@ -158,6 +165,8 @@ class LlamaCppEffectiveConfiguration(_StrictFrozenModel):
             raise ValueError("effective identity fields must match the explicit client config")
         if _raw_text_sha256(self.chat_template) != self.chat_template_sha256:
             raise ValueError("effective chat template hash does not match the template text")
+        if self.client_config.prompt_format == "chat_template_no_thinking_v1":
+            render_no_thinking_prompt("template compatibility probe", self.chat_template_sha256)
         try:
             settings: object = json.loads(self.default_generation_settings_json)
             if not isinstance(settings, dict) or not all(isinstance(key, str) for key in settings):
@@ -245,7 +254,11 @@ def llama_cpp_provider_identity(
         raise TypeError("effective_configuration must be a LlamaCppEffectiveConfiguration")
     return ProviderIdentity(
         provider_type="llama_cpp",
-        implementation_version=LLAMA_CPP_IMPLEMENTATION_VERSION,
+        implementation_version=(
+            LLAMA_CPP_CHAT_TEMPLATE_IMPLEMENTATION_VERSION
+            if effective_configuration.client_config.prompt_format == "chat_template_no_thinking_v1"
+            else LLAMA_CPP_IMPLEMENTATION_VERSION
+        ),
         model_alias=effective_configuration.model_alias,
         build_id=effective_configuration.build_id,
         provider_config_hash=canonical_sha256(effective_configuration),
@@ -361,8 +374,10 @@ class LlamaCppProvider:
 
     Construction performs one ``/health`` and one ``/props`` inspection. Each
     generation re-inspects those endpoints before exactly one ``/completion``
-    dispatch. HTTPX's environment integration and redirects are disabled, and
-    no retry transport is installed.
+    dispatch. V2 also verifies one construction-time rendering probe and applies
+    each actual prompt through ``/apply-template``, both without inference.
+    HTTPX's environment integration and redirects are disabled, and no retry
+    transport is installed.
     """
 
     __slots__ = (
@@ -397,6 +412,8 @@ class LlamaCppProvider:
             ) = self._verify_model_artifact()
             effective_configuration = self._inspect_effective_configuration()
             provider_identity = llama_cpp_provider_identity(effective_configuration)
+            if config.prompt_format == "chat_template_no_thinking_v1":
+                self._apply_chat_template("NeuraLLM template compatibility probe.")
         except Exception as exc:
             self._client.close()
             if isinstance(exc, LlamaCppProviderError):
@@ -465,8 +482,13 @@ class LlamaCppProvider:
         self._require_stable_model_artifact()
         self._require_stable_identity()
         parameters = request.decoding_parameters
+        prompt = request.prompt
+        template_request: dict[str, object] | None = None
+        template_response: dict[str, object] | None = None
+        if self._config.prompt_format == "chat_template_no_thinking_v1":
+            template_request, template_response, prompt = self._apply_chat_template(request.prompt)
         payload: dict[str, object] = {
-            "prompt": request.prompt,
+            "prompt": prompt,
             "model": self._config.model_alias,
             "temperature": parameters.temperature,
             "top_p": parameters.top_p,
@@ -480,19 +502,56 @@ class LlamaCppProvider:
         raw_response = self._request_json("POST", "/completion", json=payload)
         self._last_raw_response_sha256 = canonical_sha256(raw_response)
         effective_parameters = self._validate_completion(raw_response, parameters)
+        request_evidence: dict[str, object] = payload
+        if template_request is not None:
+            request_evidence = {
+                "chat_template": self._effective_configuration.chat_template,
+                "template_request": template_request,
+                "template_response": template_response,
+                "completion_request": payload,
+            }
         return GenerationResponse(
             text=cast(str, raw_response["content"]),
             provider_identity=self.provider_identity,
             effective_parameters=effective_parameters,
             raw_metadata=GenerationMetadata(
                 request_sha256=canonical_sha256(request),
-                generation_method="llama_cpp_completion_http_v1",
-                provider_request_json=canonical_json(payload),
-                provider_request_sha256=canonical_sha256(payload),
+                generation_method=(
+                    "llama_cpp_chat_template_http_v2"
+                    if template_request is not None
+                    else "llama_cpp_completion_http_v1"
+                ),
+                provider_request_json=canonical_json(request_evidence),
+                provider_request_sha256=canonical_sha256(request_evidence),
                 provider_response_json=canonical_json(raw_response),
                 provider_response_sha256=canonical_sha256(raw_response),
             ),
         )
+
+    def _apply_chat_template(self, prompt: str) -> tuple[dict[str, object], dict[str, object], str]:
+        """Validate renderer compatibility without dispatching any inference."""
+
+        try:
+            expected_prompt = render_no_thinking_prompt(prompt, self._config.chat_template_sha256)
+        except ValueError as exc:
+            raise LlamaCppProtocolError(str(exc)) from exc
+        template_request: dict[str, object] = {
+            "model": self._config.model_alias,
+            "messages": [{"role": "user", "content": prompt}],
+            "add_generation_prompt": True,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        template_response = self._request_json("POST", "/apply-template", json=template_request)
+        if set(template_response) != {"prompt"}:
+            raise LlamaCppProtocolError("/apply-template must return exactly a prompt field")
+        rendered = _require_non_blank_string(
+            template_response, "prompt", endpoint="/apply-template"
+        )
+        if rendered != expected_prompt:
+            raise LlamaCppProtocolError(
+                "/apply-template rendering differs from the audited no-thinking template"
+            )
+        return template_request, template_response, rendered
 
     def _url(self, endpoint: str) -> str:
         return f"{self._config.base_url}{endpoint}"
@@ -625,6 +684,14 @@ class LlamaCppProvider:
             raise LlamaCppProtocolError("/completion content must be a non-blank string")
         if response.get("stop") is not True:
             raise LlamaCppProtocolError("/completion must report a completed non-streaming result")
+        if self._config.prompt_format == "chat_template_no_thinking_v1":
+            if response.get("stop_type") not in ("eos", "word", "limit"):
+                raise LlamaCppProtocolError("/completion stop_type must be eos, word, or limit")
+            predicted = _require_int(response, "tokens_predicted", endpoint="/completion")
+            if not 0 <= predicted <= requested.max_tokens:
+                raise LlamaCppProtocolError("/completion tokens_predicted exceeds the fixed budget")
+            if not isinstance(response.get("truncated"), bool):
+                raise LlamaCppProtocolError("/completion truncated must be a boolean")
         model_alias = _require_non_blank_string(response, "model", endpoint="/completion")
         if model_alias != self._config.model_alias:
             raise LlamaCppIdentityDriftError(
@@ -686,6 +753,7 @@ class LlamaCppProvider:
 
 
 __all__ = [
+    "LLAMA_CPP_CHAT_TEMPLATE_IMPLEMENTATION_VERSION",
     "LLAMA_CPP_IMPLEMENTATION_VERSION",
     "LlamaCppEffectiveConfiguration",
     "LlamaCppIdentityDriftError",

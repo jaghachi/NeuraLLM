@@ -1,4 +1,6 @@
 # TEMPLATE ONLY: this file is intentionally not executable as checked in.
+# Use llama_cpp.qwen35-no-thinking.example.yaml for the provider and a fresh
+# local config/run directory; never overwrite the original v1 smoke evidence.
 # Run `neurallm preflight --provider-config configs/providers/llama_cpp.local.yaml`,
 # then paste every machine-local provider identity value and the exact canonical
 # effective-configuration JSON below. No config or scientific hash is claimed
@@ -6,7 +8,7 @@
 # Live execution remains separately gated by both `--execute` and
 # `--allow-live-provider`; this template never grants that authorization.
 schema_version: 1
-experiment_id: model-backed-live-smoke
+experiment_id: model-backed-live-smoke-answer-v2
 dataset:
   path: ../../datasets/development/model-backed-engineering-smoke-v1.yaml
   version: model-backed-engineering-smoke-v1
@@ -17,7 +19,7 @@ provider:
   config_path: ../providers/llama_cpp.local.yaml
   expected_identity:
     provider_type: llama_cpp
-    implementation_version: llama-cpp-completion-http-v1
+    implementation_version: llama-cpp-chat-template-http-v2
     model_alias: PASTE_PREFLIGHT_MODEL_ALIAS
     build_id: PASTE_PREFLIGHT_BUILD_ID
     provider_config_hash: 0000000000000000000000000000000000000000000000000000000000000000
@@ -84,17 +86,17 @@ decoding_bounds:
   top_k: [0, 200]
   presence_penalty: [-2.0, 2.0]
 metric_versions:
-  distinct_2: distinct-2gram-unicode-nfkc-casefold-whitespace-v1
-  distinct_3: distinct-3gram-unicode-nfkc-casefold-whitespace-v1
-  format_validity: validator-v1
-  instruction_adherence: validator-v1
-  late_window_repetition_ratio: late-quarter-unicode-nfkc-casefold-whitespace-v1
-  repeated_3_gram_ratio: repeated-3gram-unicode-nfkc-casefold-whitespace-v1
-  repeated_4_gram_ratio: repeated-4gram-unicode-nfkc-casefold-whitespace-v1
-  repetition_ratio: token-repetition-unicode-nfkc-casefold-whitespace-v1
-  response_length_tokens: unicode-nfkc-casefold-whitespace-v1
+  distinct_2: final-answer-v2-distinct-2gram-unicode-nfkc-casefold-whitespace-v1
+  distinct_3: final-answer-v2-distinct-3gram-unicode-nfkc-casefold-whitespace-v1
+  format_validity: validator-final-answer-v2
+  instruction_adherence: validator-final-answer-v2
+  late_window_repetition_ratio: final-answer-v2-late-quarter-unicode-nfkc-casefold-whitespace-v1
+  repeated_3_gram_ratio: final-answer-v2-repeated-3gram-unicode-nfkc-casefold-whitespace-v1
+  repeated_4_gram_ratio: final-answer-v2-repeated-4gram-unicode-nfkc-casefold-whitespace-v1
+  repetition_ratio: final-answer-v2-token-repetition-unicode-nfkc-casefold-whitespace-v1
+  response_length_tokens: final-answer-v2-unicode-nfkc-casefold-whitespace-v1
   semantic_similarity: semantic-unavailable-v1
-  task_score: validator-v1
+  task_score: validator-final-answer-v2
 decision_rule_version: engineering-smoke-no-scientific-decision-v1
 database_schema_version: 2
-artifact_root: ../../runs/model-backed-live-smoke
+artifact_root: ../../runs/model-backed-live-smoke-answer-v2

@@ -23,6 +23,15 @@ fake-provider run, or offline decision fixture proves that a live request was
 dispatched. Until an explicitly authorized live smoke succeeds, the state is
 `READY_FOR_LIVE_SMOKE`.
 
+Post-smoke correction: the first v1 live run completed 20/20 accounted requests,
+but its raw input and reasoning-contaminated keyword scores do not qualify the
+pilot's answer channel. New live example templates now declare the v2
+no-thinking provider and complete final-answer metric version set. The original
+run remains immutable engineering evidence. A fresh corrected smoke, then new
+development candidates and preregistration identities, are required before
+advancing; no old score or seal is retroactively migrated. See
+[the detailed audit](smoke-answer-contract.md).
+
 The experiment is valid even if the neural controller has no benefit. A run may
 support only one final decision state, and engineering completion does not
 depend on a positive result.

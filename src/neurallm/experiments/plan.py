@@ -45,7 +45,7 @@ from neurallm.experiments.protocol import (
     PreregistrationSeal,
     RunTier,
 )
-from neurallm.metrics.deterministic import METRIC_VERSIONS
+from neurallm.metrics.deterministic import validate_metric_versions
 from neurallm.metrics.validators import ValidatorSpec
 from neurallm.providers.base import GenerationRequest
 from neurallm.storage.migrations import CURRENT_SCHEMA_VERSION
@@ -443,8 +443,7 @@ def build_plan(
         expected_sha256=config.dataset.expected_dataset_sha256,
         seal=config.dataset.seal,
     )
-    if dict(config.metric_versions) != METRIC_VERSIONS:
-        raise ValueError("configured metric versions do not match the implementation")
+    validate_metric_versions(config.metric_versions)
     if not 1 <= config.database_schema_version <= CURRENT_SCHEMA_VERSION:
         raise ValueError("configured database schema version is not supported")
     has_matched_history = any(

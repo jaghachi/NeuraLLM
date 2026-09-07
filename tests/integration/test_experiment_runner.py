@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from neurallm.experiments import (
     load_experiment_config,
 )
 from neurallm.experiments.plan import ExperimentPlan
+from neurallm.metrics import FINAL_ANSWER_METRIC_VERSIONS, METRIC_VERSIONS
 from neurallm.providers.base import GenerationRequest, GenerationResponse
 from neurallm.providers.fake import FakeProvider
 from neurallm.reporting import export_closed_run
@@ -40,13 +42,20 @@ class CountingFakeProvider:
         return self._delegate.generate(request)
 
 
-def _smoke_plan() -> ExperimentPlan:
+def _smoke_plan(*, final_answer_metrics: bool = False) -> ExperimentPlan:
     root = Path(__file__).resolve().parents[2]
     loaded_config = load_experiment_config(root / "configs" / "experiments" / "smoke.yaml")
     loaded_dataset = load_dataset(
         loaded_config.dataset_path,
         expected_version=loaded_config.config.dataset.version,
     )
+    if final_answer_metrics:
+        loaded_config = replace(
+            loaded_config,
+            config=loaded_config.config.model_copy(
+                update={"metric_versions": FINAL_ANSWER_METRIC_VERSIONS}
+            ),
+        )
     return build_plan(loaded_config, loaded_dataset)
 
 
@@ -61,10 +70,12 @@ def _manifest(plan: ExperimentPlan, provider: CountingFakeProvider):
     return manifest, runtimes
 
 
+@pytest.mark.parametrize("final_answer_metrics", (False, True))
 def test_fake_plan_executes_end_to_end_and_committed_replay_makes_zero_calls(
     tmp_path: Path,
+    final_answer_metrics: bool,
 ) -> None:
-    plan = _smoke_plan()
+    plan = _smoke_plan(final_answer_metrics=final_answer_metrics)
     provider = CountingFakeProvider()
     manifest, runtimes = _manifest(plan, provider)
     database_path = tmp_path / "run.sqlite3"
@@ -95,6 +106,14 @@ def test_fake_plan_executes_end_to_end_and_committed_replay_makes_zero_calls(
         assert finalization.expected_condition_count == 3
         assert finalization == store.get_finalization()
         assert all(turn.state is TurnState.COMMITTED for turn in turns)
+        expected_versions = (
+            FINAL_ANSWER_METRIC_VERSIONS if final_answer_metrics else METRIC_VERSIONS
+        )
+        assert dict(manifest.metric_versions) == expected_versions
+        for turn in turns:
+            assert turn.metrics is not None
+            for name, value in turn.metrics.model_dump(mode="json").items():
+                assert value["metric_version"] == expected_versions[name]
         trace = json.loads(turns[0].policy_trace_json or "null")
         assert set(trace["action_application"]) == {
             "final_decoding_parameters",

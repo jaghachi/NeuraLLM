@@ -1,0 +1,15 @@
+# New live runs: use the audited Qwen3.5 single-user no-thinking protocol.
+# Copy to a NEW ignored local file; preserve any provider config used by a run.
+# Replace machine-local identity fields together from the intended server.
+# Other chat templates are intentionally unsupported by this protocol.
+base_url: http://127.0.0.1:8081
+model_alias: replace-with-explicit-server-alias
+model_path: C:/models/replace-with-Qwen3.5-4B-Q4_K_M.gguf
+model_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+build_id: replace-with-llama-cpp-build-id
+chat_template_sha256: a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715
+prompt_format: chat_template_no_thinking_v1
+connect_timeout_seconds: 5.0
+read_timeout_seconds: 120.0
+write_timeout_seconds: 10.0
+pool_timeout_seconds: 5.0

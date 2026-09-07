@@ -1,4 +1,6 @@
 # PREREGISTRATION TEMPLATE ONLY: intentionally non-executable as checked in.
+# New runs use the audited no-thinking provider and final-answer v2 metric set.
+# These inputs must match the new pilot evidence before a new seal is published.
 # Replace the llama.cpp placeholders with exact machine-local preflight evidence
 # and the static-selection placeholders with the published development-pilot
 # artifact identity before publishing a seal. This file intentionally has no
@@ -24,7 +26,7 @@ provider:
   config_path: ../providers/llama_cpp.local.yaml
   expected_identity:
     provider_type: llama_cpp
-    implementation_version: llama-cpp-completion-http-v1
+    implementation_version: llama-cpp-chat-template-http-v2
     model_alias: PASTE_PREFLIGHT_MODEL_ALIAS
     build_id: PASTE_PREFLIGHT_BUILD_ID
     provider_config_hash: 0000000000000000000000000000000000000000000000000000000000000000
@@ -342,17 +344,17 @@ decoding_bounds:
   top_k: [0, 200]
   presence_penalty: [-2.0, 2.0]
 metric_versions:
-  distinct_2: distinct-2gram-unicode-nfkc-casefold-whitespace-v1
-  distinct_3: distinct-3gram-unicode-nfkc-casefold-whitespace-v1
-  format_validity: validator-v1
-  instruction_adherence: validator-v1
-  late_window_repetition_ratio: late-quarter-unicode-nfkc-casefold-whitespace-v1
-  repeated_3_gram_ratio: repeated-3gram-unicode-nfkc-casefold-whitespace-v1
-  repeated_4_gram_ratio: repeated-4gram-unicode-nfkc-casefold-whitespace-v1
-  repetition_ratio: token-repetition-unicode-nfkc-casefold-whitespace-v1
-  response_length_tokens: unicode-nfkc-casefold-whitespace-v1
+  distinct_2: final-answer-v2-distinct-2gram-unicode-nfkc-casefold-whitespace-v1
+  distinct_3: final-answer-v2-distinct-3gram-unicode-nfkc-casefold-whitespace-v1
+  format_validity: validator-final-answer-v2
+  instruction_adherence: validator-final-answer-v2
+  late_window_repetition_ratio: final-answer-v2-late-quarter-unicode-nfkc-casefold-whitespace-v1
+  repeated_3_gram_ratio: final-answer-v2-repeated-3gram-unicode-nfkc-casefold-whitespace-v1
+  repeated_4_gram_ratio: final-answer-v2-repeated-4gram-unicode-nfkc-casefold-whitespace-v1
+  repetition_ratio: final-answer-v2-token-repetition-unicode-nfkc-casefold-whitespace-v1
+  response_length_tokens: final-answer-v2-unicode-nfkc-casefold-whitespace-v1
   semantic_similarity: semantic-unavailable-v1
-  task_score: validator-v1
+  task_score: validator-final-answer-v2
 decision_rule_version: confirmatory-scientific-decision-v2
 database_schema_version: 2
 artifact_root: ../../runs/model-backed-confirmatory
